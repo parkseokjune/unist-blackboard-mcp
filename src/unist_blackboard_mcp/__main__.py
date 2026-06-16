@@ -1,0 +1,67 @@
+"""CLI entrypoint.
+
+  unist-blackboard-mcp            # run the MCP stdio server (default)
+  unist-blackboard-mcp serve      # same
+  unist-blackboard-mcp login      # open a browser, complete SSO+MFA, store cookies
+  unist-blackboard-mcp refresh    # silent headless re-auth using stored SSO cookies (no MFA if valid)
+  unist-blackboard-mcp status     # show stored-session status
+  unist-blackboard-mcp logout     # clear stored cookies
+  unist-blackboard-mcp probe      # Phase-0 diagnostic: which API surface accepts our cookies
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+
+
+def _print(obj: object) -> None:
+    print(json.dumps(obj, indent=2, ensure_ascii=False, default=str))
+
+
+async def _probe() -> None:
+    from .client import BlackboardClient
+    client = BlackboardClient()
+    try:
+        _print(await client.probe())
+    finally:
+        await client.aclose()
+
+
+async def _refresh() -> None:
+    from .auth import AuthManager
+    auth = AuthManager()
+    ok = await auth.refresh_session_async(headless=True)
+    print(json.dumps({"refreshed": ok, **auth.status()}, indent=2, ensure_ascii=False), file=sys.stderr)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="unist-blackboard-mcp")
+    parser.add_argument(
+        "command", nargs="?", default="serve",
+        choices=["serve", "login", "refresh", "logout", "status", "probe"],
+    )
+    args = parser.parse_args()
+
+    if args.command == "serve":
+        from .server import run
+        run()
+    elif args.command == "login":
+        from .auth import AuthManager
+        AuthManager().interactive_login()
+    elif args.command == "refresh":
+        asyncio.run(_refresh())
+    elif args.command == "logout":
+        from .auth import AuthManager
+        AuthManager().clear()
+        print("Cleared stored Blackboard session.", file=sys.stderr)
+    elif args.command == "status":
+        from .auth import AuthManager
+        _print(AuthManager().status())
+    elif args.command == "probe":
+        asyncio.run(_probe())
+
+
+if __name__ == "__main__":
+    main()

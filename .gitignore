@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# uv
+.uv/
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets — never commit (cookies live in the OS keychain, not files, but be safe)
+.env
+*.cookies.json
+cookies*.json
+
+# Downloads pulled from Blackboard
+downloads/
+
+# OS
+.DS_Store
