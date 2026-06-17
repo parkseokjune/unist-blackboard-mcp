@@ -156,12 +156,18 @@ async def search(query: str, term: str | None = "current", limit: int = 20) -> l
     return await _client.search(query, term=term, limit=limit)
 
 
-@mcp.tool(annotations=_ann(read_only=True, title="Grade summary (all courses)"))
+@mcp.tool(annotations=_ann(read_only=True, title="Grade summary (weighted)"))
 @_guard
-async def grade_summary(term: str | None = "current") -> dict:
-    """Per-course grade overview: graded items, a raw point sum (raw_percent), and Blackboard's
-    own computed 'Overall Grade' column when present. raw_* is NOT weighted — see the note field."""
-    return await _client.grade_summary(term=term)
+async def grade_summary(term: str | None = "current", weights: dict | None = None) -> dict:
+    """Per-course grades with category breakdown and a WEIGHTED total.
+
+    Grade priority: blackboard_total (Blackboard's own computed grade) > weighted (category
+    percents × weights) > raw_percent (unweighted point sum). Many UNIST courses don't store
+    weights in Blackboard, so pass your syllabus weights to get the real grade, e.g.
+    weights={"Exam": 40, "Quiz": 30, "Homework": 30}, or per course
+    weights={"Operating Systems": {"Exam": 50, "Assignment": 50}}.
+    """
+    return await _client.grade_summary(term=term, weights=weights)
 
 
 @mcp.tool(annotations=_ann(read_only=True, title="List my courses"))

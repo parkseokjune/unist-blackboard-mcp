@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json as _json
 import os
 import re
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -104,6 +106,67 @@ def _bb_jar_pairs(client: httpx.AsyncClient) -> dict[str, str]:
         if dom.endswith("unist.ac.kr") or dom.endswith("blackboard.com"):
             pairs[ck.name] = ck.value
     return pairs
+
+
+def _parse_formula_weights(formula: str | None, cat_name: dict) -> dict | None:
+    """Best-effort: pull per-category weights out of a Blackboard 'Calculated' column formula.
+
+    The formula embeds `wgt:{"weights":[{"element":{"type":"cat","id":...},"value":40.0}, ...]}`.
+    Returns {category_title: weight}. None if absent/unparseable (common — many courses don't weight).
+    """
+    if not formula or "wgt" not in formula:
+        return None
+    m = re.search(r"wgt:(\{.*?\}\s*\]\s*\})", formula)
+    if not m:
+        return None
+    try:
+        data = _json.loads(m.group(1))
+    except Exception:  # noqa: BLE001
+        return None
+    out: dict[str, float] = {}
+    for w in data.get("weights", []):
+        el = w.get("element") or {}
+        val = w.get("value", w.get("weight"))
+        if el.get("type") == "cat" and val is not None:
+            name = cat_name.get(el.get("id"))
+            if name:
+                out[name] = float(val)
+    return out or None
+
+
+def _apply_weights(categories: list[dict], weights: dict | None) -> dict | None:
+    """Weighted standing from per-category percents and a {category: weight} map (case-insensitive).
+
+    Normalizes over the categories that actually have graded data, so it reflects current standing.
+    """
+    if not weights:
+        return None
+    wmap = {str(k).lower(): float(v) for k, v in weights.items()}
+    num = den = 0.0
+    used = []
+    for c in categories:
+        w = wmap.get((c.get("category") or "").lower())
+        if w and c.get("percent") is not None:
+            num += c["percent"] * w
+            den += w
+            used.append({"category": c["category"], "weight": w, "percent": c["percent"]})
+    if den == 0:
+        return None
+    return {"weighted_percent": round(num / den, 1), "based_on": used, "weight_total_used": round(den, 2)}
+
+
+def _weights_for(course: dict, weights: dict | None) -> dict | None:
+    """Resolve the weight map for one course. `weights` may be a flat {category: weight} applied to
+    all courses, or {courseId-or-name-substring: {category: weight}} per course."""
+    if not weights:
+        return None
+    if any(isinstance(v, dict) for v in weights.values()):  # per-course mapping
+        for k, v in weights.items():
+            if isinstance(v, dict) and (k == course.get("courseId")
+                                        or str(k).lower() in (course.get("name") or "").lower()):
+                return v
+        return None
+    return weights  # flat category->weight, same for every course
 
 
 def _shape_announcement(a: dict, course_id: str, course_name: str | None) -> dict:
@@ -546,46 +609,105 @@ class BlackboardClient:
         hits.sort(key=lambda h: (h.get("date") or h.get("due") or ""), reverse=True)
         return hits[:limit] if limit else hits
 
-    async def grade_summary(self, term: str | None = "current") -> dict:
-        """Per-course grade overview for the term: graded items, a raw point sum, and Blackboard's
-        own computed 'Overall Grade' column when present. Combines list_courses + get_grades."""
+    async def _course_grades_detailed(self, course_id: str) -> tuple[list[dict], dict | None]:
+        """Per-column grades enriched with category names; plus Blackboard's own category weights
+        (parsed from a Calculated column's formula) if the course defines them."""
+        uid = await self._self_id()
+        cols = await self._paged(f"{self.base}/v2/courses/{course_id}/gradebook/columns")
+        try:  # categories live on v1 (v2 404s on this instance)
+            cats_raw = await self._paged(f"{_v1(self.base)}/courses/{course_id}/gradebook/categories")
+        except (httpx.HTTPStatusError, Forbidden):
+            cats_raw = []
+        cat_name = {c["id"]: c.get("title") for c in cats_raw}
+
+        rows: list[dict] = []
+        weights_bb: dict | None = None
+        for col in cols:
+            gtype = (col.get("grading") or {}).get("type")
+            name = col.get("name") or ""
+            if gtype == "Calculated":
+                w = _parse_formula_weights((col.get("formula") or {}).get("formula"), cat_name)
+                if w:
+                    weights_bb = w
+            try:
+                grade = await self._json(
+                    f"{self.base}/v2/courses/{course_id}/gradebook/columns/{col['id']}/users/{uid}"
+                )
+            except (httpx.HTTPStatusError, Forbidden):
+                grade = {}
+            dg = grade.get("displayGrade")
+            rows.append({
+                "column": name,
+                "category": cat_name.get(col.get("gradebookCategoryId")),
+                "type": gtype,
+                "is_total": gtype == "Calculated"
+                            or name.lower() in ("total", "overall grade", "weighted total", "running total"),
+                "score": dg.get("score") if isinstance(dg, dict) else grade.get("score"),
+                "possible": (col.get("score") or {}).get("possible"),
+                "text": (dg or {}).get("text") if isinstance(dg, dict) else None,
+            })
+        return rows, weights_bb
+
+    async def grade_summary(self, term: str | None = "current", weights: dict | None = None) -> dict:
+        """Per-course grades with category breakdown and WEIGHTED standing.
+
+        Grade priority: blackboard_total (Blackboard's own computed grade) > weighted (category
+        percents × weights) > raw_percent (unweighted point sum). Weights come from Blackboard's
+        formula if the course defines them, else from the `weights` arg you pass.
+        """
         courses = await self.list_courses(term=term)
 
         async def _one(co: dict) -> dict:
             try:
-                grades = await self.get_grades(co["courseId"])
+                rows, weights_bb = await self._course_grades_detailed(co["courseId"])
             except (httpx.HTTPStatusError, Forbidden):
                 return {"course": co["name"], "courseId": co["courseId"], "error": "could not load grades"}
-            graded = [g for g in grades if isinstance(g.get("score"), (int, float))]
-            earned = sum(g["score"] for g in graded)
-            possible = sum(g["possible"] for g in graded if isinstance(g.get("possible"), (int, float)))
-            overall = next(
-                (g for g in grades if g.get("column")
-                 and ("overall" in g["column"].lower() or "total" in g["column"].lower())),
-                None,
-            )
+
+            graded = [r for r in rows if not r["is_total"] and isinstance(r.get("score"), (int, float))]
+            agg: dict = defaultdict(lambda: {"earned": 0.0, "possible": 0.0, "items": 0})
+            for r in graded:
+                a = agg[r["category"] or "Uncategorized"]
+                a["earned"] += r["score"]
+                a["items"] += 1
+                if isinstance(r["possible"], (int, float)):
+                    a["possible"] += r["possible"]
+            categories = [
+                {"category": k, "earned": round(v["earned"], 2), "possible": round(v["possible"], 2),
+                 "percent": round(v["earned"] / v["possible"] * 100, 1) if v["possible"] else None,
+                 "items": v["items"]}
+                for k, v in sorted(agg.items())
+            ]
+            earned = sum(r["score"] for r in graded)
+            possible = sum(r["possible"] for r in graded if isinstance(r["possible"], (int, float)))
+            bb_total = next((r for r in rows if r["is_total"] and isinstance(r.get("score"), (int, float))), None)
+            user_w = _weights_for(co, weights)
+            weighted = _apply_weights(categories, weights_bb or user_w)
             return {
                 "course": co["name"], "courseId": co["courseId"],
                 "graded_count": len(graded),
-                "pending_count": sum(1 for g in grades if g.get("score") is None),
-                "raw_earned": round(earned, 2),
-                "raw_possible": round(possible, 2),
-                "raw_percent": round(earned / possible * 100, 1) if possible else None,
-                "overall_column": (
-                    {"name": overall["column"], "score": overall["score"], "text": overall["text"]}
-                    if overall else None
+                "pending_count": sum(1 for r in rows if not r["is_total"] and r.get("score") is None),
+                "categories": categories,
+                "blackboard_total": (
+                    {"name": bb_total["column"], "score": bb_total["score"], "possible": bb_total["possible"],
+                     "text": bb_total["text"],
+                     "percent": round(bb_total["score"] / bb_total["possible"] * 100, 1)
+                                if bb_total.get("possible") else None}
+                    if bb_total else None
                 ),
-                "graded_items": [
-                    {"name": g["column"], "score": g["score"], "possible": g["possible"]} for g in graded
-                ],
+                "weights_source": "blackboard" if weights_bb else ("user" if (user_w and weighted) else None),
+                "weighted": weighted,
+                "raw_percent": round(earned / possible * 100, 1) if possible else None,
+                "raw_earned": round(earned, 2), "raw_possible": round(possible, 2),
             }
 
         summaries = await asyncio.gather(*[_one(c) for c in courses])
         return {
             "term": term,
             "courses": list(summaries),
-            "note": "raw_* is a simple point sum of graded items, NOT the weighted course grade; "
-                    "overall_column (if present) is Blackboard's own computed grade.",
+            "note": "Grade priority: blackboard_total > weighted (categories × weights) > raw_percent "
+                    "(unweighted). Many UNIST courses don't store weights in Blackboard — pass "
+                    "weights={'Exam':40,'Quiz':30,'Homework':30} (or {course: {category: weight}}) "
+                    "to apply your syllabus weights.",
         }
 
     # ---------- keep-alive ----------

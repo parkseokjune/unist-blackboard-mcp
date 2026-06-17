@@ -1,6 +1,6 @@
 [project]
 name = "unist-blackboard-mcp"
-version = "0.1.2"
+version = "0.1.3"
 description = "MCP server for UNIST Blackboard (Learn Ultra) — session-cookie auth, read + guarded write"
 readme = "README.md"
 requires-python = ">=3.10"

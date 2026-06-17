@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.3 — 2026-06-17 — weighted grades
+
+`grade_summary` is now **weighting-aware** (raw point-sum was misleading when exams/assignments
+carry different weights):
+- Groups each course's graded items by **category** (Exam, Quiz, Homework, …) with per-category %.
+- Reports **`blackboard_total`** — Blackboard's own computed grade — when the course has a
+  Calculated/Total column (authoritative; all weighting rules already applied).
+- Parses **category weights from the Blackboard formula** when present, else accepts a
+  **`weights`** arg (your syllabus, e.g. `{"Exam": 40, "Quiz": 30, "Homework": 30}`, or per course
+  `{"Operating Systems": {"Exam": 50, "Assignment": 50}}`) and computes the weighted standing,
+  normalized over categories that have grades so far.
+- Many UNIST courses don't store weights in Blackboard, so passing your own is the usual path.
+- `weights_source` tells you whether the weighted figure came from Blackboard or your input.
+
 ## 0.1.2 — 2026-06-17 — new tools
 
 - **`search(query)`** — keyword search across the term's announcements (title+body) and upcoming

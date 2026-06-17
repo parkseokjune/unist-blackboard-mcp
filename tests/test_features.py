@@ -40,26 +40,57 @@ async def test_search_matches_body_and_deadline():
     assert await c.search("") == []  # empty query
 
 
-async def test_grade_summary_computes_raw_percent_and_overall():
+async def test_grade_summary_category_breakdown_and_user_weights():
     c = BlackboardClient(auth=object())
 
     async def courses(term=None, include_closed=False):
         return [{"courseId": "_1_1", "name": "Operating Systems"}]
 
-    async def grades(cid):
-        return [
-            {"column": "Project #1", "score": 98.6, "text": None, "status": "Graded", "possible": 100.0},
-            {"column": "Midterm", "score": 16.0, "text": None, "status": "Graded", "possible": 100.0},
-            {"column": "Project #3", "score": None, "text": None, "status": None, "possible": 100.0},
-            {"column": "Overall Grade", "score": None, "text": "57%", "status": None, "possible": 200.0},
+    async def detailed(course_id):
+        rows = [
+            {"column": "Quiz 1", "category": "Quiz", "type": "Manual", "is_total": False,
+             "score": 18.0, "possible": 20.0, "text": None},
+            {"column": "Quiz 2", "category": "Quiz", "type": "Manual", "is_total": False,
+             "score": 16.0, "possible": 20.0, "text": None},
+            {"column": "Midterm", "category": "Exam", "type": "Manual", "is_total": False,
+             "score": 80.0, "possible": 100.0, "text": None},
+            {"column": "Project 1", "category": "Assignment", "type": "Manual", "is_total": False,
+             "score": None, "possible": 100.0, "text": None},
         ]
+        return rows, None  # no Blackboard-defined weights
 
     c.list_courses = courses
-    c.get_grades = grades
+    c._course_grades_detailed = detailed
 
-    out = await c.grade_summary()
+    out = await c.grade_summary(weights={"Exam": 50, "Quiz": 50})
     co = out["courses"][0]
-    assert co["graded_count"] == 2 and co["pending_count"] == 2
-    assert co["raw_earned"] == 114.6 and co["raw_possible"] == 200.0
-    assert co["raw_percent"] == 57.3
-    assert co["overall_column"]["name"] == "Overall Grade" and co["overall_column"]["text"] == "57%"
+    cats = {x["category"]: x for x in co["categories"]}
+    assert cats["Quiz"]["earned"] == 34.0 and cats["Quiz"]["possible"] == 40.0 and cats["Quiz"]["percent"] == 85.0
+    assert cats["Exam"]["percent"] == 80.0
+    assert co["pending_count"] == 1                      # Project 1 ungraded
+    assert co["weights_source"] == "user"
+    assert co["weighted"]["weighted_percent"] == 82.5    # (85*50 + 80*50) / 100
+    assert co["raw_percent"] == 81.4                     # 114 / 140, unweighted
+
+
+async def test_grade_summary_prefers_blackboard_total_and_formula_weights():
+    c = BlackboardClient(auth=object())
+
+    async def courses(term=None, include_closed=False):
+        return [{"courseId": "_1_1", "name": "X"}]
+
+    async def detailed(course_id):
+        rows = [
+            {"column": "HW", "category": "Homework", "type": "Manual", "is_total": False,
+             "score": 9.0, "possible": 10.0, "text": None},
+            {"column": "Total", "category": None, "type": "Calculated", "is_total": True,
+             "score": 29.0, "possible": 30.0, "text": "96.7%"},
+        ]
+        return rows, {"Homework": 100}  # weights parsed from Blackboard formula
+
+    c.list_courses = courses
+    c._course_grades_detailed = detailed
+
+    co = (await c.grade_summary())["courses"][0]
+    assert co["blackboard_total"]["score"] == 29.0 and co["blackboard_total"]["percent"] == 96.7
+    assert co["weights_source"] == "blackboard"

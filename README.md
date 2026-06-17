@@ -89,7 +89,7 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 
 **복합 (추천 시작점)**
 - `weekly_briefing(days=7)` — 현재 과목 + 다가오는 마감 + 최근 공지(시험일정·평균 포함)를 한 번에
-- `grade_summary(term="current")` — 전 과목 성적 한눈에 (과목별 득점·백분율 + Blackboard 계산 성적)
+- `grade_summary(term, weights)` — 전 과목 성적 (카테고리별 분해 + **가중 총점**). Blackboard에 가중 총점이 있으면 그걸 쓰고, 없으면 `weights={"Exam":40,"Quiz":30,...}`로 시험·과제 비율 적용
 - `search(query)` — 공지·마감 키워드 검색 (예: "디지털논리 시험", "midterm")
 
 **읽기 (readOnlyHint=true)**
