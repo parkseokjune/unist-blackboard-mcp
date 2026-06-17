@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.0 — 2026-06-17 — multi-client: Gemini, GPT/OpenAI & HTTP transport
+
+Use the server from non-Claude AIs. MCP is a standard, so the existing **stdio** server already
+works with Gemini CLI, the google-genai SDK, and the OpenAI Agents SDK (they spawn it locally —
+the safest path, nothing leaves your machine). Added for HTTP-based clients:
+
+- **Streamable HTTP transport**: `unist-blackboard-mcp serve --http` (default `127.0.0.1:8000/mcp`).
+  Localhost binding gets the SDK's automatic DNS-rebinding/Origin protection. `--host`/`--port`
+  (or `BB_HTTP_HOST`/`BB_HTTP_PORT`).
+- **Optional bearer auth**: set `BB_HTTP_TOKEN` to require `Authorization: Bearer <token>` on the
+  HTTP transport (verified: 401 without, accepted with). For exposing via a tunnel to ChatGPT /
+  the Responses API hosted `mcp` tool, which require a public HTTPS URL.
+- **[docs/clients.md](docs/clients.md)** — copy-paste recipes for Gemini CLI (stdio + httpUrl),
+  google-genai SDK, OpenAI Agents SDK (stdio + Streamable HTTP), ChatGPT/Responses API (tunnel),
+  plus a security guide (prefer stdio; never bind 0.0.0.0 unauthenticated).
+
+stdio remains the default; nothing about the Claude experience changes.
+
 ## 0.1.7 — 2026-06-17 — bulk download
 
 - **`download_course_materials(course_id, confirm=False, overwrite=False)`** — bulk-download every

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import platform
 import sys
 
@@ -63,11 +64,23 @@ def main() -> None:
         "command", nargs="?", default="serve",
         choices=["serve", "setup", "login", "refresh", "doctor", "logout", "status", "version", "probe"],
     )
+    parser.add_argument("--http", action="store_true",
+                        help="serve over Streamable HTTP (for non-Claude / HTTP MCP clients) instead of stdio")
+    parser.add_argument("--host", default=os.environ.get("BB_HTTP_HOST", "127.0.0.1"),
+                        help="HTTP bind host (default localhost)")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("BB_HTTP_PORT", "8000")),
+                        help="HTTP port (default 8000)")
     args = parser.parse_args()
 
     if args.command == "serve":
         from .server import run
-        run()
+        if args.http:
+            if args.host not in ("127.0.0.1", "localhost", "::1"):
+                print(f"WARNING: binding to {args.host} exposes your Blackboard session beyond this machine. "
+                      "Only do this on a trusted network and add authentication.", file=sys.stderr)
+            run(transport="streamable-http", host=args.host, port=args.port)
+        else:
+            run()
     elif args.command == "version":
         _print(_version_bundle())
     elif args.command == "doctor":

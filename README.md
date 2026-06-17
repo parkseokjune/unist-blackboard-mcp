@@ -30,6 +30,17 @@ uvx unist-blackboard-mcp setup
 
 ---
 
+## 🤖 Claude 말고 Gemini·GPT에서도 쓰기
+
+MCP 표준이라 다른 AI에도 붙습니다. **로컬(stdio)이 가장 안전**합니다(쿠키가 컴퓨터 밖으로 안 나감).
+
+- **Gemini CLI** — `~/.gemini/settings.json`의 `mcpServers`에 `{"command":"uvx","args":["unist-blackboard-mcp","serve"]}`
+- **Gemini API (google-genai SDK)** / **OpenAI Agents SDK** — stdio로 서버를 직접 띄워 도구로 연결
+- **HTTP가 필요한 경우** — `uvx unist-blackboard-mcp serve --http` (기본 `127.0.0.1:8000/mcp`). 원격 노출 시 `BB_HTTP_TOKEN`으로 베어러 인증.
+- **ChatGPT 커넥터/Responses API** — 공개 HTTPS가 필요(터널+토큰) → 자격증명 노출 주의
+
+복사용 설정·코드 예제와 보안 가이드: **[docs/clients.md](docs/clients.md)**
+
 ## ✨ 무엇을 할 수 있나요? (기능별)
 
 Claude에게 자연어로 물으면 알아서 아래 도구를 호출합니다. 괄호 안이 실제 도구 이름입니다.
@@ -179,7 +190,8 @@ uvx unist-blackboard-mcp doctor    # 자가 진단
 uvx unist-blackboard-mcp status    # 세션 상태
 uvx unist-blackboard-mcp version   # 버전/환경 번들
 uvx unist-blackboard-mcp logout    # 저장된 세션 삭제
-uvx unist-blackboard-mcp serve     # MCP 서버 실행(클라이언트가 자동 호출)
+uvx unist-blackboard-mcp serve            # MCP 서버 실행(stdio, 클라이언트가 자동 호출)
+uvx unist-blackboard-mcp serve --http     # HTTP 전송(127.0.0.1:8000/mcp) — Gemini/OpenAI HTTP 클라이언트용
 ```
 
 ## ⚙️ 환경변수
@@ -195,6 +207,8 @@ uvx unist-blackboard-mcp serve     # MCP 서버 실행(클라이언트가 자동
 | `BB_REFRESH_TIMEOUT_MS` | `45000` | silent refresh 대기 한도 |
 | `BB_MAX_CONCURRENCY` | `6` | 동시 HTTP 요청 상한 |
 | `BB_MAX_OUTPUT_CHARS` | `40000` | 도구 출력 크기 소프트 캡 |
+| `BB_HTTP_HOST` / `BB_HTTP_PORT` | `127.0.0.1` / `8000` | `serve --http` 바인드 주소 |
+| `BB_HTTP_TOKEN` | (없음) | 설정 시 HTTP 전송에 베어러 토큰 인증 요구 |
 
 ---
 

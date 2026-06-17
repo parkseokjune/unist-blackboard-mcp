@@ -25,7 +25,44 @@ from . import config
 from .auth import AuthManager
 from .client import AuthExpired, BlackboardClient, Forbidden, NotAuthenticated
 
-mcp = FastMCP("unist-blackboard")
+import os
+
+# HTTP transport bind defaults (also used for the optional bearer-auth metadata URLs).
+_HTTP_HOST = os.environ.get("BB_HTTP_HOST", "127.0.0.1")
+_HTTP_PORT = int(os.environ.get("BB_HTTP_PORT", "8000"))
+
+
+def _make_mcp() -> FastMCP:
+    """FastMCP server. If BB_HTTP_TOKEN is set, require a bearer token on the HTTP transport
+    (no effect on stdio, which is local-only). Localhost HTTP without a token is already
+    protected by the SDK's automatic DNS-rebinding/Origin checks."""
+    token = os.environ.get("BB_HTTP_TOKEN")
+    if token:
+        try:
+            import secrets
+
+            from mcp.server.auth.provider import AccessToken, TokenVerifier
+            from mcp.server.auth.settings import AuthSettings
+            from pydantic import AnyHttpUrl
+
+            class _StaticBearer(TokenVerifier):
+                async def verify_token(self, t: str):  # noqa: ANN001
+                    if secrets.compare_digest(t or "", token):
+                        return AccessToken(token=t, client_id="local", scopes=["blackboard"], expires_at=None)
+                    return None
+
+            base = AnyHttpUrl(f"http://{_HTTP_HOST}:{_HTTP_PORT}")
+            return FastMCP("unist-blackboard", host=_HTTP_HOST, port=_HTTP_PORT,
+                           token_verifier=_StaticBearer(),
+                           auth=AuthSettings(issuer_url=base, resource_server_url=base,
+                                             required_scopes=["blackboard"]))
+        except Exception as e:  # noqa: BLE001 - never let auth wiring break stdio
+            print(f"[unist-blackboard-mcp] BB_HTTP_TOKEN set but auth setup failed ({e}); "
+                  "serving WITHOUT token auth.", file=sys.stderr, flush=True)
+    return FastMCP("unist-blackboard", host=_HTTP_HOST, port=_HTTP_PORT)
+
+
+mcp = _make_mcp()
 
 _auth = AuthManager()
 _client = BlackboardClient(_auth)
@@ -453,5 +490,16 @@ def exam_prep_en_prompt(course: str = "") -> str:
     )
 
 
-def run() -> None:
-    mcp.run(transport="stdio")
+def run(transport: str = "stdio", host: str | None = None, port: int | None = None) -> None:
+    """Run the server. transport='stdio' (default, for Claude Desktop/Code, Gemini CLI, OpenAI Agents
+    SDK) or 'streamable-http'/'http' (for HTTP-based MCP clients/SDKs; binds 127.0.0.1 by default)."""
+    if transport in ("http", "streamable-http"):
+        if host:
+            mcp.settings.host = host
+        if port:
+            mcp.settings.port = int(port)
+        url = f"http://{mcp.settings.host}:{mcp.settings.port}{mcp.settings.streamable_http_path}"
+        print(f"[unist-blackboard-mcp] Streamable HTTP MCP server at {url}", file=sys.stderr, flush=True)
+        mcp.run(transport="streamable-http")
+    else:
+        mcp.run(transport="stdio")
