@@ -2,6 +2,7 @@
 
   unist-blackboard-mcp            # run the MCP stdio server (default)
   unist-blackboard-mcp serve      # same
+  unist-blackboard-mcp setup      # FIRST-TIME wizard: install browser, login, register in Claude
   unist-blackboard-mcp login      # open a browser, complete SSO+MFA, store cookies
   unist-blackboard-mcp refresh    # silent headless re-auth using stored SSO cookies (no MFA if valid)
   unist-blackboard-mcp status     # show stored-session status
@@ -40,13 +41,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="unist-blackboard-mcp")
     parser.add_argument(
         "command", nargs="?", default="serve",
-        choices=["serve", "login", "refresh", "logout", "status", "probe"],
+        choices=["serve", "setup", "login", "refresh", "logout", "status", "probe"],
     )
     args = parser.parse_args()
 
     if args.command == "serve":
         from .server import run
         run()
+    elif args.command == "setup":
+        from .setup_wizard import run_setup
+        run_setup()
     elif args.command == "login":
         from .auth import AuthManager
         AuthManager().interactive_login()

@@ -18,10 +18,24 @@ Blackboard 개발자 앱 키(관리자 승인 필요)가 **필요 없습니다**
       → OS 키체인(keyring)에 저장 → REST API(/learn/api/public)를 그 학생 권한으로 호출
 ```
 
-> 쿠키는 평문 파일이 아니라 **macOS 키체인**에 저장됩니다. 세션은 수명이 짧아 만료되면
-> 다시 `login` 하면 됩니다.
+> 쿠키는 평문 파일이 아니라 **macOS 키체인**에 저장됩니다. 만료돼도 보통 **자동 재인증**(무MFA)되며,
+> 완전 만료 시에만 다시 `login` 하면 됩니다.
 
-## 설치 / 셋업
+## 🎓 학생용 빠른 설치
+
+**[Claude Desktop](https://claude.ai/download)** 과 **uv**(`curl -LsSf https://astral.sh/uv/install.sh | sh`)만 있으면 한 줄:
+
+```sh
+uvx unist-blackboard-mcp setup
+```
+
+→ 브라우저 설치 + UNIST 로그인 + Claude 설정 등록까지 자동. 끝나면 Claude Desktop 재실행 후
+"이번 주 뭐 해야 해?"라고 물어보세요. 자세한 단계·문제해결·개인정보는 **[INSTALL.md](INSTALL.md)** 참고.
+
+> ⚠️ 비공식 도구. 본인 계정으로 본인 데이터만, 로그인은 네 브라우저에서, 쿠키는 네 Mac에만 저장됩니다.
+> 학교 공식 승인(3LO OAuth)도 병행 추진 중입니다 → [docs/unist-official-app-request.md](docs/unist-official-app-request.md).
+
+## 개발자 설치 (소스에서)
 
 ```bash
 cd unist-blackboard-mcp

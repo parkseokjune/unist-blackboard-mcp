@@ -1,0 +1,26 @@
+name: Release to PyPI
+
+# Publishes to PyPI when a version tag (e.g. v0.1.0) is pushed.
+# Uses PyPI Trusted Publishing (OIDC) — NO token/secret needed once you configure a
+# trusted publisher on PyPI: project = unist-blackboard-mcp, owner = parkseokjune,
+# repo = unist-blackboard-mcp, workflow = release.yml, environment = pypi.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write          # required for trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
