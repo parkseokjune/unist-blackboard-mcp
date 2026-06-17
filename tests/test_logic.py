@@ -23,6 +23,14 @@ def test_safe_name_neutralizes_path_traversal():
         assert sn(bad, "fallback") == "fallback"            # empties/dots -> fallback
 
 
+def test_safe_name_per_segment_blocks_nested_traversal():
+    # download_course_materials sanitizes EACH folder segment with _safe_name before joining.
+    sn = BlackboardClient._safe_name
+    segs = [sn(s, "folder") for s in "../../etc/cron.d".split("/") if s.strip()]
+    assert segs == ["folder", "folder", "etc", "cron.d"]      # ".." -> fallback, no traversal
+    assert all(".." not in s and "/" not in s for s in segs)
+
+
 def test_validate_host_requires_https():
     assert _validate_host("https://blackboard.unist.ac.kr") == "https://blackboard.unist.ac.kr"
     for bad in ("http://blackboard.unist.ac.kr", "blackboard.unist.ac.kr", "ftp://x", ""):

@@ -479,12 +479,19 @@ class BlackboardClient:
         return base[:200] if base and base not in (".", "..") else fallback
 
     async def download_attachment(
-        self, course_id: str, content_id: str, attachment_id: str, filename: str | None = None
+        self, course_id: str, content_id: str, attachment_id: str, filename: str | None = None,
+        subdir: str | None = None, overwrite: bool = True,
     ) -> str:
         root = Path(config.DOWNLOAD_DIR).resolve()
-        dest_dir = (root / self._safe_name(course_id, "course")).resolve()
+        # Build course/<sanitized folder segments> — EACH segment sanitized so a nested folder
+        # name can't traverse out (the single-basename guard alone doesn't cover multi-segment).
+        dest_dir = root / self._safe_name(course_id, "course")
+        for seg in (subdir or "").split("/"):
+            if seg.strip():
+                dest_dir = dest_dir / self._safe_name(seg, "folder")
+        dest_dir = dest_dir.resolve()
         if not dest_dir.is_relative_to(root):
-            raise ValueError(f"Refusing path outside download dir for course_id={course_id!r}")
+            raise ValueError(f"Refusing path outside download dir (course_id={course_id!r}, subdir={subdir!r})")
         dest_dir.mkdir(parents=True, exist_ok=True)
         url = (f"{_v1(self.base)}/courses/{course_id}/contents/{content_id}"
                f"/attachments/{attachment_id}/download")
@@ -507,12 +514,74 @@ class BlackboardClient:
                 path = (dest_dir / name).resolve()
                 if not path.is_relative_to(dest_dir):  # defense in depth
                     raise ValueError(f"Unsafe attachment filename: {name!r}")
+                if not overwrite and path.exists():
+                    return str(path)
                 with open(path, "wb") as f:
                     async for chunk in r.aiter_bytes():
                         f.write(chunk)
                 return str(path)
 
         return await _open_and_save()
+
+    async def download_course_materials(
+        self, course_id: str, confirm: bool = False, overwrite: bool = False, max_files: int = 200,
+    ) -> dict:
+        """Bulk-download a course's files, mirroring its folder structure. confirm=False -> manifest
+        preview only (no download). Folders/files are taken from the recursive content tree."""
+        outline = (await self.course_outline(course_id)).get("outline", [])
+
+        leaves: list[tuple[str, str, list[str]]] = []  # (content_id, title, folder_path)
+
+        def _walk(nodes: list[dict], path: list[str]) -> None:
+            for n in nodes:
+                children = n.get("children") or []
+                is_folder = "folder" in (n.get("type") or "") or bool(children)
+                if is_folder:
+                    _walk(children, path + [n.get("title") or ""])
+                elif n.get("id"):
+                    leaves.append((n["id"], n.get("title") or "", path))
+
+        _walk(outline, [])
+
+        sem = asyncio.Semaphore(5)
+
+        async def _atts(leaf):
+            cid, _title, path = leaf
+            async with sem:
+                try:
+                    atts = await self.list_attachments(course_id, cid)
+                except (httpx.HTTPStatusError, Forbidden):
+                    return []
+            return [(cid, a, path) for a in atts]
+
+        gathered = [x for sub in await asyncio.gather(*[_atts(le) for le in leaves]) for x in sub]
+        truncated = len(gathered) > max_files
+        files = gathered[:max_files]
+        manifest = [{"folder": "/".join(p), "file": (a.get("fileName") or a.get("id")), "contentId": cid}
+                    for (cid, a, p) in files]
+
+        if not confirm:
+            return {"preview": True, "courseId": course_id, "file_count": len(files), "truncated": truncated,
+                    "files": manifest,
+                    "note": f"Re-call with confirm=True to download {len(files)} files into "
+                            f"{config.DOWNLOAD_DIR}/<course>/<folders>/. overwrite=False skips existing files."}
+
+        results: dict = {"downloaded": 0, "failed": []}
+
+        async def _dl(item):
+            cid, a, path = item
+            async with sem:
+                try:
+                    await self.download_attachment(course_id, cid, a["id"], a.get("fileName"),
+                                                   subdir="/".join(path), overwrite=overwrite)
+                    results["downloaded"] += 1
+                except (httpx.HTTPStatusError, Forbidden, OSError, ValueError) as e:
+                    results["failed"].append({"file": a.get("fileName"), "error": type(e).__name__})
+
+        await asyncio.gather(*[_dl(f) for f in files])
+        return {"courseId": course_id,
+                "dir": str(Path(config.DOWNLOAD_DIR) / self._safe_name(course_id, "course")),
+                "file_count": len(files), "truncated": truncated, **results}
 
     # ---------- grades ----------
     async def get_grades(self, course_id: str) -> list[dict]:

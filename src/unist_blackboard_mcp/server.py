@@ -307,6 +307,19 @@ async def list_attachments(course_id: str, content_id: str) -> list[dict]:
     return await _client.list_attachments(course_id, content_id)
 
 
+@mcp.tool(annotations=_ann(destructive=True, title="Download ALL course materials"))
+@_guard
+async def download_course_materials(
+    course_id: str, confirm: bool = False, overwrite: bool = False
+) -> dict:
+    """Bulk-download every file in a course, mirroring its folder structure under the download dir.
+
+    confirm=False (default) returns a MANIFEST preview only (no files written). Re-call with
+    confirm=True to actually download. overwrite=False skips files already on disk.
+    """
+    return await _client.download_course_materials(course_id, confirm=confirm, overwrite=overwrite)
+
+
 @mcp.tool(annotations=_ann(read_only=False, title="Download material"))
 @_guard
 async def download_material(course_id: str, content_id: str, attachment_id: str) -> dict:

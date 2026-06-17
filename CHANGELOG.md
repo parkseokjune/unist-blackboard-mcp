@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 — 2026-06-17 — bulk download
+
+- **`download_course_materials(course_id, confirm=False, overwrite=False)`** — bulk-download every
+  file in a course, mirroring its folder structure under the download dir. `confirm=False` returns a
+  manifest preview (no writes); `confirm=True` downloads (bounded concurrency, skips existing unless
+  `overwrite`). Each folder segment is sanitized (multi-segment path-traversal safe). Live preview:
+  14 OS files laid out as `Academic Integrity/…`, `Lecture Notes/ch1.pdf…`. 33 tests.
+
 ## 0.1.6 — 2026-06-17 — robustness & ops
 
 - **`doctor`** CLI — self-check for students: Python, deps, Chromium, keychain, host, session,

@@ -104,7 +104,8 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 - `get_course_contents` / `get_content_children` — 콘텐츠(한 단계)
 - `course_outline(course_id)` — 전체 콘텐츠 트리 한 번에 (중첩)
 - `get_content_body(course_id, content_id)` — 콘텐츠 본문 텍스트(+핸들러)
-- `list_attachments`, `download_material` — 자료 목록/다운로드
+- `list_attachments`, `download_material` — 자료 목록/단일 다운로드
+- `download_course_materials(course_id, confirm)` — 과목 전체 자료 폴더구조 그대로 일괄 다운로드 (confirm=False면 미리보기)
 - `get_grades` — 성적
 - `list_announcements` — 공지 (현재 학기 전 과목 통합, 본문 HTML→텍스트; 시험일정·평균·통계 포함). `since`/`limit`/`course_id` 옵션
 - `upcoming_deadlines` — 마감/일정(전 과목)
