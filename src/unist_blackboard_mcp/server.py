@@ -146,6 +146,24 @@ async def weekly_briefing(days: int = 7) -> dict:
     return await _client.weekly_briefing(days)
 
 
+@mcp.tool(annotations=_ann(read_only=True, title="Search announcements/deadlines"))
+@_guard
+async def search(query: str, term: str | None = "current", limit: int = 20) -> list[dict]:
+    """Keyword search across this term's announcements (title+body) and upcoming deadlines.
+
+    e.g. "디지털논리 시험", "midterm", "project 3". Returns matches with a snippet, newest first.
+    """
+    return await _client.search(query, term=term, limit=limit)
+
+
+@mcp.tool(annotations=_ann(read_only=True, title="Grade summary (all courses)"))
+@_guard
+async def grade_summary(term: str | None = "current") -> dict:
+    """Per-course grade overview: graded items, a raw point sum (raw_percent), and Blackboard's
+    own computed 'Overall Grade' column when present. raw_* is NOT weighted — see the note field."""
+    return await _client.grade_summary(term=term)
+
+
 @mcp.tool(annotations=_ann(read_only=True, title="List my courses"))
 @_guard
 async def list_courses(term: str | None = None, include_closed: bool = False) -> list[dict]:

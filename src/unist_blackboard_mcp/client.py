@@ -79,6 +79,19 @@ def _html_to_text(s: str | None) -> str:
     return s.strip()
 
 
+def _snippet(text: str | None, q: str, width: int = 160) -> str:
+    """A short excerpt of `text` centered on the first match of `q` (case-insensitive)."""
+    if not text:
+        return ""
+    flat = text.replace("\n", " ")
+    i = flat.lower().find(q)
+    if i < 0:
+        return flat[:width].strip()
+    start = max(0, i - width // 3)
+    end = min(len(flat), i + len(q) + (width * 2) // 3)
+    return ("…" if start > 0 else "") + flat[start:end].strip() + ("…" if end < len(flat) else "")
+
+
 def _bb_jar_pairs(client: httpx.AsyncClient) -> dict[str, str]:
     """Extract Blackboard-host cookies (name->value) from the live jar.
 
@@ -497,6 +510,82 @@ class BlackboardClient:
             "current_courses": [{"courseId": c["courseId"], "name": c["name"]} for c in courses],
             "upcoming_deadlines": deadlines,
             "recent_announcements": anns,
+        }
+
+    async def search(self, query: str, term: str | None = "current", limit: int = 20) -> list[dict]:
+        """Keyword search across this term's announcements (title+body) and upcoming deadlines.
+
+        Returns matches with a snippet, newest first. Good for "find the exam announcement for X".
+        """
+        q = (query or "").lower().strip()
+        if not q:
+            return []
+        anns, deadlines = await asyncio.gather(
+            self.list_announcements(term=term, limit=0),
+            self.upcoming_deadlines(limit=0),
+            return_exceptions=True,
+        )
+        anns = anns if not isinstance(anns, Exception) else []
+        deadlines = deadlines if not isinstance(deadlines, Exception) else []
+
+        hits: list[dict] = []
+        for a in anns:
+            body = a.get("body") or ""
+            if q in f"{a.get('title','')}\n{body}\n{a.get('course','')}".lower():
+                hits.append({
+                    "type": "announcement", "course": a.get("course"), "title": a.get("title"),
+                    "date": a.get("date"), "courseId": a.get("courseId"),
+                    "snippet": _snippet(body, q),
+                })
+        for d in deadlines:
+            if q in f"{d.get('title','')}\n{d.get('course','')}".lower():
+                hits.append({
+                    "type": "deadline", "course": d.get("course"), "title": d.get("title"),
+                    "due": d.get("due"),
+                })
+        hits.sort(key=lambda h: (h.get("date") or h.get("due") or ""), reverse=True)
+        return hits[:limit] if limit else hits
+
+    async def grade_summary(self, term: str | None = "current") -> dict:
+        """Per-course grade overview for the term: graded items, a raw point sum, and Blackboard's
+        own computed 'Overall Grade' column when present. Combines list_courses + get_grades."""
+        courses = await self.list_courses(term=term)
+
+        async def _one(co: dict) -> dict:
+            try:
+                grades = await self.get_grades(co["courseId"])
+            except (httpx.HTTPStatusError, Forbidden):
+                return {"course": co["name"], "courseId": co["courseId"], "error": "could not load grades"}
+            graded = [g for g in grades if isinstance(g.get("score"), (int, float))]
+            earned = sum(g["score"] for g in graded)
+            possible = sum(g["possible"] for g in graded if isinstance(g.get("possible"), (int, float)))
+            overall = next(
+                (g for g in grades if g.get("column")
+                 and ("overall" in g["column"].lower() or "total" in g["column"].lower())),
+                None,
+            )
+            return {
+                "course": co["name"], "courseId": co["courseId"],
+                "graded_count": len(graded),
+                "pending_count": sum(1 for g in grades if g.get("score") is None),
+                "raw_earned": round(earned, 2),
+                "raw_possible": round(possible, 2),
+                "raw_percent": round(earned / possible * 100, 1) if possible else None,
+                "overall_column": (
+                    {"name": overall["column"], "score": overall["score"], "text": overall["text"]}
+                    if overall else None
+                ),
+                "graded_items": [
+                    {"name": g["column"], "score": g["score"], "possible": g["possible"]} for g in graded
+                ],
+            }
+
+        summaries = await asyncio.gather(*[_one(c) for c in courses])
+        return {
+            "term": term,
+            "courses": list(summaries),
+            "note": "raw_* is a simple point sum of graded items, NOT the weighted course grade; "
+                    "overall_column (if present) is Blackboard's own computed grade.",
         }
 
     # ---------- keep-alive ----------

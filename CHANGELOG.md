@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 — 2026-06-17 — new tools
+
+- **`search(query)`** — keyword search across the term's announcements (title+body) and upcoming
+  deadlines, returning a snippet around each match. e.g. "find the exam announcement for X".
+- **`grade_summary(term="current")`** — per-course grade overview: graded items, a raw point sum
+  (`raw_percent`), and Blackboard's own computed "Overall Grade" column when present. Degrades
+  per-course on 403. Both verified live; 26 tests.
+
 ## 0.1.1 — 2026-06-17 — security & robustness hardening
 
 After a multi-agent adversarial code review (19 confirmed findings), all were fixed:

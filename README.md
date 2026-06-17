@@ -89,6 +89,8 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 
 **복합 (추천 시작점)**
 - `weekly_briefing(days=7)` — 현재 과목 + 다가오는 마감 + 최근 공지(시험일정·평균 포함)를 한 번에
+- `grade_summary(term="current")` — 전 과목 성적 한눈에 (과목별 득점·백분율 + Blackboard 계산 성적)
+- `search(query)` — 공지·마감 키워드 검색 (예: "디지털논리 시험", "midterm")
 
 **읽기 (readOnlyHint=true)**
 - `bb_auth_status` — 세션 상태

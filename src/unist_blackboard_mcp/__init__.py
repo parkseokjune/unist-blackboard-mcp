@@ -6,4 +6,4 @@ real browser; we capture the resulting session cookies and reuse them against th
 Blackboard public REST API (/learn/api/public) on the user's behalf.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
