@@ -1,5 +1,9 @@
 # unist-blackboard-mcp
 
+[![CI](https://github.com/parkseokjune/unist-blackboard-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/parkseokjune/unist-blackboard-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+
 UNIST Blackboard(Learn Ultra)를 Claude에 연결하는 MCP 서버.
 "이번 주 마감 뭐 있어?", "운영체제 강의자료 받아줘", "과목별 성적 요약해줘" 같은 요청을 Claude가 직접 처리합니다.
 

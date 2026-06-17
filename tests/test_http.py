@@ -65,6 +65,24 @@ async def test_401_refresh_fails_raises():
 
 
 @respx.mock
+async def test_whoami_auto_heals_on_expiry():
+    pub = f"{config.PUBLIC_API}/v1/users/me"
+    priv = f"{config.PRIVATE_API}/v1/users/me"
+    # both 401 first; after a silent refresh, public returns the user
+    respx.get(pub).mock(side_effect=[
+        httpx.Response(401),
+        httpx.Response(200, json={"id": "_1_1", "userName": "x"}),
+    ])
+    respx.get(priv).mock(return_value=httpx.Response(401))
+    auth = FakeAuth()
+    c = BlackboardClient(auth=auth)
+    me = await c.whoami()
+    assert me["id"] == "_1_1"
+    assert auth.refresh_calls == 1  # refreshed exactly once, then retried
+    await c.aclose()
+
+
+@respx.mock
 async def test_list_announcements_aggregates_and_cleans():
     c = BlackboardClient(auth=FakeAuth())
 

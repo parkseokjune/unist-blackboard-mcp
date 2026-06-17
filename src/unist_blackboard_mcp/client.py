@@ -198,7 +198,7 @@ class BlackboardClient:
         return out
 
     # ---------- identity ----------
-    async def whoami(self) -> dict:
+    async def whoami(self, _retried: bool = False) -> dict:
         client = await self._ensure()
         for url in (f"{config.PUBLIC_API}/v1/users/me", f"{config.PRIVATE_API}/v1/users/me"):
             r = await client.get(url)
@@ -206,7 +206,11 @@ class BlackboardClient:
                 data = r.json()
                 self._uid = data.get("id") or data.get("userId") or data.get("uuid")
                 return data
-        raise AuthExpired("Could not resolve the current user — the session has likely expired.")
+        # whoami bypasses _get, so it must trigger the same silent-refresh auto-heal itself —
+        # it's the first call made, so without this an expired session never gets a chance to refresh.
+        if not _retried and await self._try_refresh():
+            return await self.whoami(_retried=True)
+        raise AuthExpired("Could not resolve the current user and silent refresh failed — run login.")
 
     async def _self_id(self) -> str:
         if not self._uid:
