@@ -7,9 +7,23 @@ SAML provider id `apId=_3282_1`, and the Azure AD tenant behind it).
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
+
+
+def _validate_host(url: str) -> str:
+    """BB_HOST must be an https:// URL with a hostname.
+
+    Session cookies are sent to this host, so allowing http:// (no TLS) or a bare/garbage value
+    would risk leaking the BbRouter session cookie in cleartext or to the wrong host.
+    """
+    p = urlsplit(url)
+    if p.scheme != "https" or not p.hostname:
+        raise ValueError(f"BB_HOST must be an https:// URL with a hostname, got {url!r}")
+    return url
+
 
 # Canonical host. Avoid bb.unist.ac.kr (TLS cert SAN mismatch). unist.blackboard.com is a SaaS alias.
-HOST = os.environ.get("BB_HOST", "https://blackboard.unist.ac.kr").rstrip("/")
+HOST = _validate_host(os.environ.get("BB_HOST", "https://blackboard.unist.ac.kr").rstrip("/"))
 
 # Public REST API — documented + stable. Cookie-session auth confirmed enabled on this host.
 PUBLIC_API = f"{HOST}/learn/api/public"

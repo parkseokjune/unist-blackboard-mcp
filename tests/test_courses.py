@@ -54,3 +54,15 @@ async def test_explicit_term_filter():
     rows = await _client().list_courses(term="2025092")
     assert [r["courseCode"] for r in rows] == ["2025092_CSE22101"]
     assert rows[0]["term"] == "2025092"
+
+
+async def test_term_current_with_no_academic_terms_returns_empty():
+    # If no enrolment has a parseable 7-digit term, "current" must return [] (not all courses).
+    c = BlackboardClient(auth=object())
+
+    async def only_non_academic():
+        return [_membership("2026_Online_Violence", "Compliance", "Yes"),
+                _membership("vote_for_x", "Vote", "Yes")]
+
+    c._memberships = only_non_academic
+    assert await c.list_courses(term="current") == []

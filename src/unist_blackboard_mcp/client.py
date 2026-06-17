@@ -17,8 +17,10 @@ import asyncio
 import html
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -116,12 +118,12 @@ class BlackboardClient:
         # membership cache (course list changes rarely).
         self._memb_cache: list[dict] | None = None
         self._memb_cache_at = 0.0
+        # background drain tasks for clients orphaned by a refresh (kept referenced so not GC'd).
+        self._drains: set = set()
 
     def _now(self) -> float:
-        try:
-            return asyncio.get_event_loop().time()
-        except RuntimeError:
-            return 0.0
+        # loop-independent monotonic clock (no deprecated get_event_loop, no bogus 0.0 off-loop).
+        return time.monotonic()
 
     @property
     def base(self) -> str:
@@ -135,8 +137,16 @@ class BlackboardClient:
                     "No stored Blackboard session. Run `unist-blackboard-mcp login` "
                     "(or the bb_login tool) and complete SSO + MFA."
                 )
+            # Scope every cookie to the Blackboard host so httpx/cookiejar never attaches the
+            # session cookie to an off-host request — even when following a 3xx redirect (which
+            # would otherwise leak BbRouter to e.g. an S3/CDN or attacker host). config validates
+            # BB_HOST is https, closing the plain-http / wrong-host config vector.
+            host = urlsplit(config.HOST).hostname
+            jar = httpx.Cookies()
+            for name, value in cookies.items():
+                jar.set(name, value, domain=host, path="/")
             self._client = httpx.AsyncClient(
-                cookies=cookies,
+                cookies=jar,
                 timeout=config.HTTP_TIMEOUT,
                 headers={"User-Agent": config.USER_AGENT, "Accept": "application/json"},
                 follow_redirects=True,
@@ -148,11 +158,31 @@ class BlackboardClient:
             await self._client.aclose()
             self._client = None
 
-    async def _rebuild(self) -> None:
-        """Drop the cookie-bound http client + caches so the next call uses fresh cookies."""
-        await self.aclose()
+    def _detach(self) -> None:
+        """Drop the shared client + caches WITHOUT closing it out from under in-flight requests.
+
+        Each request captures its own local client reference, so it finishes on the orphaned
+        client; the next call rebuilds with fresh cookies. Use this (not aclose) whenever a
+        re-login/refresh happens while other tool calls may be mid-request.
+        """
+        self._client = None
         self._uid = None
         self._memb_cache = None
+
+    async def _rebuild(self) -> None:
+        """Swap in a fresh cookie-bound client. The old one is detached (not closed inline) so
+        concurrent in-flight requests can finish, then drained-closed in the background."""
+        old = self._client
+        self._detach()
+        if old is not None:
+            async def _drain(c: httpx.AsyncClient) -> None:
+                try:
+                    await asyncio.sleep(config.HTTP_TIMEOUT + 5)  # let in-flight requests finish
+                finally:
+                    await c.aclose()
+            t = asyncio.create_task(_drain(old))
+            self._drains.add(t)
+            t.add_done_callback(self._drains.discard)
 
     async def _try_refresh(self) -> bool:
         """Silently refresh the session once (lock-guarded, deduped). Returns True on success."""
@@ -183,6 +213,19 @@ class BlackboardClient:
 
     async def _json(self, url: str, **kw):
         return (await self._get(url, **kw)).json()
+
+    async def _write(self, method: str, url: str, _retried: bool = False, **kw) -> httpx.Response:
+        """POST/PATCH/etc. with the same 401 silent-refresh + 403->Forbidden handling as _get."""
+        client = await self._ensure()
+        r = await client.request(method, url, **kw)
+        if r.status_code == 401:
+            if not _retried and await self._try_refresh():
+                return await self._write(method, url, _retried=True, **kw)
+            raise AuthExpired("Write rejected (401) and silent refresh failed. Re-run login.")
+        if r.status_code == 403:
+            raise Forbidden(f"Write forbidden (403) for {url} — account lacks permission here.")
+        r.raise_for_status()
+        return r
 
     async def _paged(self, url: str, params: dict | None = None) -> list[dict]:
         """Follow Blackboard's paging (`results` + `paging.nextPage`)."""
@@ -258,7 +301,9 @@ class BlackboardClient:
 
         if term == "current":
             terms = [r["term"] for r in rows if r["term"]]
-            term = max(terms) if terms else None
+            if not terms:
+                return []  # asked for the current term but none is resolvable -> nothing, not all
+            term = max(terms)
         if term:
             rows = [r for r in rows if r["term"] == term]
 
@@ -276,26 +321,52 @@ class BlackboardClient:
             f"{_v1(self.base)}/courses/{course_id}/contents/{content_id}/attachments"
         )
 
+    @staticmethod
+    def _safe_name(name: str | None, fallback: str) -> str:
+        """Reduce a server- or caller-supplied name to a bare, traversal-free basename.
+
+        Neutralizes path traversal: basename('/etc/x')=='x', basename('../../x')=='x'; strips
+        leading dots and caps length. Used so a malicious content-disposition / course_id can
+        never make download_attachment write outside the download dir (CWE-22 arbitrary write).
+        """
+        base = os.path.basename((name or "").replace("\\", "/")).strip().lstrip(".")
+        return base[:200] if base and base not in (".", "..") else fallback
+
     async def download_attachment(
         self, course_id: str, content_id: str, attachment_id: str, filename: str | None = None
     ) -> str:
+        root = Path(config.DOWNLOAD_DIR).resolve()
+        dest_dir = (root / self._safe_name(course_id, "course")).resolve()
+        if not dest_dir.is_relative_to(root):
+            raise ValueError(f"Refusing path outside download dir for course_id={course_id!r}")
+        dest_dir.mkdir(parents=True, exist_ok=True)
         url = (f"{_v1(self.base)}/courses/{course_id}/contents/{content_id}"
                f"/attachments/{attachment_id}/download")
-        dest_dir = Path(config.DOWNLOAD_DIR) / course_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        client = await self._ensure()
-        async with client.stream("GET", url) as r:
-            if r.status_code == 401:
-                raise AuthExpired("Download rejected (401). Re-run login.")
-            r.raise_for_status()
-            if not filename:
-                cd = r.headers.get("content-disposition", "")
-                filename = cd.split("filename=")[-1].strip('"; ') or attachment_id
-            path = dest_dir / filename
-            with open(path, "wb") as f:
-                async for chunk in r.aiter_bytes():
-                    f.write(chunk)
-        return str(path)
+
+        async def _open_and_save(_retried: bool = False) -> str:
+            client = await self._ensure()
+            async with client.stream("GET", url) as r:
+                if r.status_code == 401:
+                    if not _retried and await self._try_refresh():
+                        return await _open_and_save(_retried=True)
+                    raise AuthExpired("Download rejected (401) and silent refresh failed. Re-run login.")
+                if r.status_code == 403:
+                    raise Forbidden(f"Download forbidden (403) for {url} — account lacks permission.")
+                r.raise_for_status()
+                name = filename
+                if not name:
+                    cd = r.headers.get("content-disposition", "")
+                    name = cd.split("filename=")[-1].strip('"; ')
+                name = self._safe_name(name, attachment_id)
+                path = (dest_dir / name).resolve()
+                if not path.is_relative_to(dest_dir):  # defense in depth
+                    raise ValueError(f"Unsafe attachment filename: {name!r}")
+                with open(path, "wb") as f:
+                    async for chunk in r.aiter_bytes():
+                        f.write(chunk)
+                return str(path)
+
+        return await _open_and_save()
 
     # ---------- grades ----------
     async def get_grades(self, course_id: str) -> list[dict]:
@@ -317,7 +388,7 @@ class BlackboardClient:
                 "score": grade.get("displayGrade", {}).get("score") if isinstance(grade.get("displayGrade"), dict) else grade.get("score"),
                 "text": (grade.get("displayGrade") or {}).get("text"),
                 "status": grade.get("status"),
-                "possible": col.get("score", {}).get("possible"),
+                "possible": (col.get("score") or {}).get("possible"),
             })
         return out
 
@@ -369,8 +440,13 @@ class BlackboardClient:
             params["until"] = until
         return await self._paged(f"{_v1(self.base)}/calendars/items", params=params or None)
 
-    async def upcoming_deadlines(self, since: str | None = None, until: str | None = None) -> list[dict]:
-        """Calendar items shaped for 'what's due' — {title, course, type, due}, sorted by due date."""
+    async def upcoming_deadlines(
+        self, since: str | None = None, until: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        """Calendar items shaped for 'what's due' — {title, course, type, due}, sorted by due date.
+
+        `limit` caps the result (0 = no cap) so an unbounded calendar can't blow the output budget.
+        """
         items = await self.list_calendar(since, until)
         shaped = [
             {
@@ -385,7 +461,7 @@ class BlackboardClient:
             for it in items
         ]
         shaped.sort(key=lambda x: (x.get("due") or ""))
-        return shaped
+        return shaped[:limit] if limit else shaped
 
     # ---------- composite ----------
     async def weekly_briefing(self, days: int = 7) -> dict:
@@ -400,14 +476,24 @@ class BlackboardClient:
         until_cal = (now + timedelta(days=days)).strftime(fmt)
         since_ann = (now - timedelta(days=days)).strftime(fmt)
 
-        deadlines, anns, courses = await asyncio.gather(
+        # return_exceptions=True so one section's 403/timeout doesn't wipe out the whole briefing.
+        results = await asyncio.gather(
             self.upcoming_deadlines(since=since_cal, until=until_cal),
             self.list_announcements(since=since_ann, limit=20),
             self.list_courses(term="current"),
+            return_exceptions=True,
         )
+        deadlines, anns, courses = (r if not isinstance(r, Exception) else [] for r in results)
+        deadlines, anns, courses = list(deadlines), list(anns), list(courses)
+        # keep the bundled payload bounded (announcement bodies can be long)
+        for a in anns:
+            body = a.get("body")
+            if body and len(body) > 1500:
+                a["body"] = body[:1500] + "… [truncated]"
         return {
             "generated": now.strftime(fmt),
             "window_days": days,
+            "partial": any(isinstance(r, Exception) for r in results),
             "current_courses": [{"courseId": c["courseId"], "name": c["name"]} for c in courses],
             "upcoming_deadlines": deadlines,
             "recent_announcements": anns,
@@ -422,7 +508,14 @@ class BlackboardClient:
             return False
         r = await client.get(f"{config.PUBLIC_API}/v1/users/me")
         if r.status_code == 401:
-            return await self._try_refresh()
+            # Don't trust _try_refresh's deduped return as proof of liveness — re-ping the
+            # rebuilt client and judge from the actual response.
+            await self._try_refresh()
+            try:
+                client = await self._ensure()
+            except NotAuthenticated:
+                return False
+            r = await client.get(f"{config.PUBLIC_API}/v1/users/me")
         if r.status_code >= 400:
             return False
         self.auth.persist_pairs(_bb_jar_pairs(client))
@@ -435,7 +528,6 @@ class BlackboardClient:
     # ---------- WRITE OPS (guarded by the server with confirm=True) ----------
     async def create_calendar_item(self, title: str, start: str, end: str, description: str = "") -> dict:
         """Create a PERSONAL calendar item (e.g. a self-set study reminder)."""
-        client = await self._ensure()
         body = {
             "calendarId": "PERSONAL",
             "title": title,
@@ -443,10 +535,7 @@ class BlackboardClient:
             "end": end,
             "description": description,
         }
-        r = await client.post(f"{_v1(self.base)}/calendars/items", json=body)
-        if r.status_code == 401:
-            raise AuthExpired("Write rejected (401). Re-run login.")
-        r.raise_for_status()
+        r = await self._write("POST", f"{_v1(self.base)}/calendars/items", json=body)
         return r.json()
 
     async def submit_assignment_attempt(
@@ -457,16 +546,13 @@ class BlackboardClient:
         Blackboard submission via REST is brittle and may be disabled for students on
         this instance. Verify on a throwaway/test assignment first.
         """
-        client = await self._ensure()
         base = f"{self.base}/v2/courses/{course_id}/gradebook/columns/{column_id}/attempts"
-        created = await client.post(base, json={"text": text, "status": "InProgress"})
-        if created.status_code == 401:
-            raise AuthExpired("Attempt create rejected (401). Re-run login.")
-        created.raise_for_status()
+        created = await self._write("POST", base, json={"text": text, "status": "InProgress"})
         attempt = created.json()
         attempt_id = attempt.get("id")
-        submitted = await client.patch(f"{base}/{attempt_id}", json={"status": "NeedsGrading"})
-        submitted.raise_for_status()
+        if not attempt_id:
+            raise RuntimeError(f"Attempt create returned no id (keys: {list(attempt)[:8]}); cannot submit.")
+        submitted = await self._write("PATCH", f"{base}/{attempt_id}", json={"status": "NeedsGrading"})
         return submitted.json()
 
     # ---------- diagnostics (Phase 0 probe) ----------

@@ -84,6 +84,7 @@ def _guard(fn):
 # ============================ AUTH ============================
 
 @mcp.tool(annotations=_ann(read_only=True, title="Auth status"))
+@_guard
 async def bb_auth_status() -> dict:
     """Report whether a Blackboard session is stored and how old it is."""
     return _auth.status()
@@ -110,10 +111,13 @@ async def bb_login(timeout_seconds: int = 300) -> dict:
         proc.kill()
         return {"error": "login_timeout",
                 "message": "Login did not finish in time. Run `unist-blackboard-mcp login` in a terminal."}
-    await _client.aclose()  # drop any stale cookie-bound http client
+    _client._detach()  # drop stale cookie client WITHOUT yanking it from in-flight reads
     status = _auth.status()
     if not status.get("authenticated"):
-        return {"error": "login_failed", "stderr": (err or b"").decode(errors="replace")[-500:]}
+        # Don't forward raw subprocess stderr to the model/transcript (it could echo an SSO URL
+        # containing a token). The detailed stderr is already on the local stderr log.
+        return {"error": "login_failed",
+                "message": "Login did not complete. Run `unist-blackboard-mcp login` in a terminal to retry."}
     return {"ok": True, **status}
 
 
@@ -175,10 +179,13 @@ async def list_attachments(course_id: str, content_id: str) -> list[dict]:
     return await _client.list_attachments(course_id, content_id)
 
 
-@mcp.tool(annotations=_ann(read_only=True, title="Download material"))
+@mcp.tool(annotations=_ann(read_only=False, title="Download material"))
 @_guard
 async def download_material(course_id: str, content_id: str, attachment_id: str) -> dict:
-    """Download a course-material attachment to the local download folder; returns the saved path."""
+    """Download a course-material attachment to the local download folder; returns the saved path.
+
+    Not read-only: it writes a file to disk (under BB_DOWNLOAD_DIR).
+    """
     path = await _client.download_attachment(course_id, content_id, attachment_id)
     return {"saved_to": path}
 

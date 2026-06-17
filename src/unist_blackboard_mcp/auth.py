@@ -77,7 +77,10 @@ class AuthManager:
         raw = keyring.get_password(self.service, self.key)
         if not raw:
             return None
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None  # corrupt/foreign payload -> treat as "no session" rather than crashing
         if "records" in data:  # v2
             records = data.get("records", [])
             pairs = data.get("pairs") or {

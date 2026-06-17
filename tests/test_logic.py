@@ -1,6 +1,33 @@
 """Pure-logic unit tests (no network)."""
+import pytest
+
 from unist_blackboard_mcp.auth import _is_bb_cookie, _sanitize_for_add
-from unist_blackboard_mcp.client import _html_to_text, _shape_announcement, _term_of
+from unist_blackboard_mcp.client import (
+    BlackboardClient,
+    _html_to_text,
+    _shape_announcement,
+    _term_of,
+)
+from unist_blackboard_mcp.config import _validate_host
+
+
+def test_safe_name_neutralizes_path_traversal():
+    sn = BlackboardClient._safe_name
+    assert sn("../../../../evil.sh", "fb") == "evil.sh"   # relative traversal stripped
+    assert sn("/etc/cron.d/evil", "fb") == "evil"          # absolute path stripped
+    assert sn("a/b/c.pdf", "fb") == "c.pdf"                # nested path -> basename
+    assert sn("..\\..\\evil", "fb") == "evil"              # windows separators
+    assert sn(".hidden", "fb") == "hidden"                  # leading dots stripped
+    assert sn("normal_file.pdf", "fb") == "normal_file.pdf"
+    for bad in ("", None, "..", ".", "/"):
+        assert sn(bad, "fallback") == "fallback"            # empties/dots -> fallback
+
+
+def test_validate_host_requires_https():
+    assert _validate_host("https://blackboard.unist.ac.kr") == "https://blackboard.unist.ac.kr"
+    for bad in ("http://blackboard.unist.ac.kr", "blackboard.unist.ac.kr", "ftp://x", ""):
+        with pytest.raises(ValueError):
+            _validate_host(bad)
 
 
 def test_html_to_text_bullets_and_breaks():

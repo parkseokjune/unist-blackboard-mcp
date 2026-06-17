@@ -45,15 +45,21 @@ def claude_desktop_config_path() -> Path:
     return Path.home() / ".config/Claude/claude_desktop_config.json"
 
 
-def _ensure_chromium() -> None:
+def claude_desktop_installed() -> bool:
+    """Best-effort check for Claude Desktop, so we don't write a config nothing reads."""
+    if sys.platform == "darwin":
+        return Path("/Applications/Claude.app").exists() or claude_desktop_config_path().parent.exists()
+    return claude_desktop_config_path().parent.exists()
+
+
+def _ensure_chromium() -> bool:
     _log("[1/3] Playwright용 Chromium 확인/설치 중... (최초 1회, 시간이 좀 걸립니다)")
     try:
-        subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            check=True,
-        )
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        return True
     except Exception as e:  # noqa: BLE001
         _log(f"  ! Chromium 설치 실패: {e}\n  수동으로: python -m playwright install chromium")
+        return False
 
 
 def _write_desktop_config() -> Path | None:
@@ -73,26 +79,39 @@ def _write_desktop_config() -> Path | None:
     return path
 
 
+_CLAUDE_CODE_CMD = (
+    "claude mcp add --scope user --transport stdio unist-blackboard "
+    "-- uvx unist-blackboard-mcp serve"
+)
+
+
 def run_setup() -> None:
     _log("=== UNIST Blackboard MCP 설치 마법사 ===")
-    _ensure_chromium()
+    if not _ensure_chromium():
+        _log("\n설치를 중단합니다. `python -m playwright install chromium` 실행 후 다시 시도하세요.")
+        return
 
     _log("\n[2/3] UNIST Blackboard 로그인 — 브라우저에서 SSO + MFA를 완료하세요.")
     from .auth import AuthManager
     AuthManager().interactive_login()
 
-    _log("\n[3/3] Claude Desktop 설정에 서버를 등록합니다...")
-    path = _write_desktop_config()
-    _log(f"  ✔ 설정 작성: {path}")
-
-    _log(
-        "\n=== 완료! ===\n"
-        "1) Claude Desktop을 완전히 종료 후 다시 실행하세요.\n"
-        "2) Claude에게 이렇게 물어보세요:\n"
-        "   - \"이번 주 뭐 해야 해?\"  (weekly_briefing)\n"
-        "   - \"이번주 공지 알려줘\" / \"운영체제 성적 정리해줘\"\n"
-        "세션이 만료돼도 자동으로 재인증됩니다(보통 MFA 없이). "
-        "완전히 만료되면 `uvx unist-blackboard-mcp login` 한 번 더 실행하세요.\n"
-        "(Claude Code 사용자는: claude mcp add --scope user --transport stdio "
-        "unist-blackboard -- uvx unist-blackboard-mcp serve)"
-    )
+    _log("\n[3/3] Claude에 서버를 등록합니다...")
+    if claude_desktop_installed():
+        path = _write_desktop_config()
+        _log(
+            f"  ✔ Claude Desktop 설정: {path}\n"
+            "\n=== 완료! ===\n"
+            "1) Claude Desktop을 완전히 종료 후 다시 실행하세요.\n"
+            "2) Claude에게: \"이번 주 뭐 해야 해?\" / \"이번주 공지\" / \"운영체제 성적 정리해줘\"\n"
+            "세션이 만료돼도 보통 MFA 없이 자동 재인증됩니다. 완전 만료 시 `uvx unist-blackboard-mcp login`.\n"
+            f"(Claude Code 사용자는 대신: {_CLAUDE_CODE_CMD})"
+        )
+    else:
+        _log(
+            "  ! Claude Desktop이 보이지 않습니다.\n"
+            "  • Claude Code를 쓰신다면 아래를 실행하세요:\n"
+            f"      {_CLAUDE_CODE_CMD}\n"
+            "  • Claude Desktop을 쓰실 거면 https://claude.ai/download 설치 후 "
+            "`uvx unist-blackboard-mcp setup` 재실행.\n"
+            "로그인 세션은 이미 저장됐습니다."
+        )
