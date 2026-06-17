@@ -64,6 +64,7 @@ def _term_of(course_code: str | None) -> str | None:
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
 def _html_to_text(s: str | None) -> str:
@@ -573,6 +574,67 @@ class BlackboardClient:
             "current_courses": [{"courseId": c["courseId"], "name": c["name"]} for c in courses],
             "upcoming_deadlines": deadlines,
             "recent_announcements": anns,
+        }
+
+    async def course_staff(self, course_id: str) -> dict:
+        """Instructors/TAs for a course (names, roles, login id) + any emails scraped from the
+        syllabus/announcements/content — because Blackboard does NOT expose staff emails via the API.
+        """
+        members = await self._paged(f"{_v1(self.base)}/courses/{course_id}/users", params={"expand": "user"})
+        staff = []
+        for m in members:
+            role = m.get("courseRoleId")
+            if role and role != "Student":
+                u = m.get("user") or {}
+                nm = u.get("name") or {}
+                full = f"{nm.get('given', '')} {nm.get('family', '')}".strip()
+                staff.append({
+                    "role": role,
+                    "name": full or u.get("userName"),
+                    "userName": u.get("userName"),
+                    "email": (u.get("contact") or {}).get("email"),  # almost always None for students
+                })
+        role_order = {"Instructor": 0, "TeachingAssistant": 1, "Grader": 2}
+        staff.sort(key=lambda s: role_order.get(s["role"], 9))
+
+        # Harvest emails from text the staff actually wrote (syllabus usually lists them here).
+        emails: dict[str, str] = {}
+
+        def _scan(text: str, source: str) -> None:
+            for em in _EMAIL_RE.findall(text or ""):
+                emails.setdefault(em.lower(), source)
+
+        try:
+            for a in await self.list_announcements(course_id=course_id, limit=0):
+                _scan(f"{a.get('title', '')} {a.get('body', '')}", f"announcement: {a.get('title')}")
+        except (httpx.HTTPStatusError, Forbidden):
+            pass
+        try:
+            contents = await self.get_course_contents(course_id)
+        except (httpx.HTTPStatusError, Forbidden):
+            contents = []
+        syllabus_hits = 0
+        for ct in contents:
+            title = ct.get("title") or ""
+            _scan(f"{title} {ct.get('description', '')}", f"content: {title}")
+            # The syllabus is often a document whose BODY (not list desc) holds the emails — fetch a few.
+            if syllabus_hits < 5 and any(
+                k in title.lower() for k in ("syllabus", "강의계획", "course info", "개요", "orientation", "info")
+            ):
+                syllabus_hits += 1
+                try:
+                    detail = await self.get_assignment(course_id, ct["id"])
+                    _scan(_html_to_text(detail.get("body")), f"syllabus: {title}")
+                except (httpx.HTTPStatusError, Forbidden):
+                    pass
+
+        return {
+            "courseId": course_id,
+            "staff": staff,
+            "emails_found": [{"email": k, "source": v} for k, v in emails.items()],
+            "note": "Blackboard does not expose staff emails to students via API, so `staff` has "
+                    "names/roles/login-id only. `emails_found` are addresses scraped from the "
+                    "syllabus/announcements/content text. For a syllabus PDF, use download_material.",
         }
 
     async def search(self, query: str, term: str | None = "current", limit: int = 20) -> list[dict]:

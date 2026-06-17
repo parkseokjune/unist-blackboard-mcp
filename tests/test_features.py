@@ -40,6 +40,39 @@ async def test_search_matches_body_and_deadline():
     assert await c.search("") == []  # empty query
 
 
+async def test_course_staff_lists_staff_and_scrapes_emails():
+    c = BlackboardClient(auth=object())
+
+    async def paged(url, params=None):
+        return [
+            {"courseRoleId": "Instructor",
+             "user": {"name": {"given": "웅기", "family": "백"}, "userName": "10204", "contact": {"email": None}}},
+            {"courseRoleId": "TeachingAssistant",
+             "user": {"name": {"given": "정석", "family": "남"}, "userName": "ta1", "contact": {}}},
+            {"courseRoleId": "Student", "user": {"userName": "s1"}},
+        ]
+
+    async def anns(course_id=None, limit=0):
+        return [{"title": "Welcome", "body": "email the TA at ta1@unist.ac.kr"}]
+
+    async def contents(course_id):
+        return [{"id": "_1_1", "title": "Course Syllabus", "description": "prof: baek@unist.ac.kr"}]
+
+    async def assignment(course_id, content_id):
+        return {"body": "<p>extra TA: ta2@unist.ac.kr</p>"}
+
+    c._paged = paged
+    c.list_announcements = anns
+    c.get_course_contents = contents
+    c.get_assignment = assignment
+
+    out = await c.course_staff("_c_")
+    assert {s["role"] for s in out["staff"]} == {"Instructor", "TeachingAssistant"}  # students excluded
+    assert out["staff"][0]["role"] == "Instructor"                                   # sorted first
+    found = {e["email"] for e in out["emails_found"]}
+    assert {"ta1@unist.ac.kr", "baek@unist.ac.kr", "ta2@unist.ac.kr"} <= found
+
+
 async def test_grade_summary_category_breakdown_and_user_weights():
     c = BlackboardClient(auth=object())
 

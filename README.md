@@ -103,6 +103,7 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 - `list_announcements` — 공지 (현재 학기 전 과목 통합, 본문 HTML→텍스트; 시험일정·평균·통계 포함). `since`/`limit`/`course_id` 옵션
 - `upcoming_deadlines` — 마감/일정(전 과목)
 - `get_assignment` — 과제 상세
+- `course_staff(course_id)` — 교수·TA 명단(이름·역할·로그인ID) + 실래버스·공지에서 추출한 이메일
 
 **쓰기 (destructiveHint=true, `confirm=True` 필수)**
 - `create_calendar_item` — 개인 캘린더 알림 생성

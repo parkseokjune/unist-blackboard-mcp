@@ -146,6 +146,15 @@ async def weekly_briefing(days: int = 7) -> dict:
     return await _client.weekly_briefing(days)
 
 
+@mcp.tool(annotations=_ann(read_only=True, title="Course staff & emails"))
+@_guard
+async def course_staff(course_id: str) -> dict:
+    """Instructors/TAs for a course (names, roles, login id) plus any emails found in the syllabus,
+    announcements, or content. Blackboard hides staff emails from students via API, so the emails
+    are scraped from posted text — where professors/TAs usually write them."""
+    return await _client.course_staff(course_id)
+
+
 @mcp.tool(annotations=_ann(read_only=True, title="Search announcements/deadlines"))
 @_guard
 async def search(query: str, term: str | None = "current", limit: int = 20) -> list[dict]:

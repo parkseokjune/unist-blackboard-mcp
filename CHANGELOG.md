@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 — 2026-06-17 — course staff & emails
+
+- **`course_staff(course_id)`** — lists a course's instructors/TAs (name, role, login id) from the
+  roster, AND scrapes contact emails from the syllabus / announcements / content text. Blackboard
+  does not expose staff emails to students via the API, so the syllabus-posted addresses are the
+  real source. Live: found the TA-team address + individual TA emails from announcements.
+
 ## 0.1.3 — 2026-06-17 — weighted grades
 
 `grade_summary` is now **weighting-aware** (raw point-sum was misleading when exams/assignments
