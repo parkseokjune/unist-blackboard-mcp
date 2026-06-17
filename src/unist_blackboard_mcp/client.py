@@ -82,6 +82,64 @@ def _html_to_text(s: str | None) -> str:
     return s.strip()
 
 
+_MEDIA_RE = re.compile(r'(?:src|href)\s*=\s*["\']([^"\']+)["\']', re.I)
+
+
+def _announcement_media(raw_body: str | None) -> list[str]:
+    """Extract image/link URLs from an announcement's HTML body (e.g. posted exam solutions),
+    resolving relative paths against the Blackboard host. Deduped, order preserved."""
+    urls = []
+    for u in _MEDIA_RE.findall(raw_body or ""):
+        u = html.unescape(u).strip()
+        if u.startswith("//"):
+            u = "https:" + u
+        elif u.startswith("/"):
+            u = config.HOST + u
+        if u.lower().startswith("http"):
+            urls.append(u)
+    return list(dict.fromkeys(urls))
+
+
+def _resolve_course(courses: list[dict], query: str) -> dict | None:
+    """Find a course by exact courseId, exact courseCode, then case-insensitive name substring."""
+    if not query:
+        return None
+    ql = query.lower()
+    for c in courses:  # courses arrive newest-term-first
+        if c.get("courseId") == query or (c.get("courseCode") or "").lower() == ql:
+            return c
+    for c in courses:
+        if ql in (c.get("name") or "").lower() or ql in (c.get("courseCode") or "").lower():
+            return c
+    return None
+
+
+def _pdf_text(data: bytes | None, max_pages: int = 25) -> str:
+    """Extract text from PDF bytes (best-effort). Used to read emails out of a syllabus PDF."""
+    if not data:
+        return ""
+    try:
+        import io
+
+        from pypdf import PdfReader
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((p.extract_text() or "") for p in reader.pages[:max_pages])
+    except Exception:  # noqa: BLE001 - corrupt/encrypted PDFs shouldn't break the tool
+        return ""
+
+
+def _flatten_outline(roots: list[dict]) -> list[dict]:
+    out, stack = [], list(roots)
+    while stack:
+        n = stack.pop()
+        out.append(n)
+        stack.extend(n.get("children") or [])
+    return out
+
+
+_SYLLABUS_KW = ("syllabus", "강의계획", "course info", "course information", "개요", "계획서", "orientation")
+
+
 def _snippet(text: str | None, q: str, width: int = 160) -> str:
     """A short excerpt of `text` centered on the first match of `q` (case-insensitive)."""
     if not text:
@@ -171,7 +229,7 @@ def _weights_for(course: dict, weights: dict | None) -> dict | None:
 
 
 def _shape_announcement(a: dict, course_id: str, course_name: str | None) -> dict:
-    return {
+    out = {
         "course": course_name,
         "courseId": course_id,
         "title": a.get("title"),
@@ -180,6 +238,10 @@ def _shape_announcement(a: dict, course_id: str, course_name: str | None) -> dic
         "body": _html_to_text(a.get("body")),
         "id": a.get("id"),
     }
+    media = _announcement_media(a.get("body"))
+    if media:  # links/images the professor embedded (e.g. exam-solution screenshots)
+        out["attachments"] = media
+    return out
 
 
 class BlackboardClient:
@@ -609,33 +671,68 @@ class BlackboardClient:
                 _scan(f"{a.get('title', '')} {a.get('body', '')}", f"announcement: {a.get('title')}")
         except (httpx.HTTPStatusError, Forbidden):
             pass
+        # Walk the FULL content tree (syllabus PDFs are usually nested deep, not top-level) and
+        # scrape emails from syllabus items — including the syllabus PDF's text, which the API
+        # never exposes as a field.
         try:
-            contents = await self.get_course_contents(course_id)
+            flat = _flatten_outline((await self.course_outline(course_id)).get("outline", []))
         except (httpx.HTTPStatusError, Forbidden):
-            contents = []
+            flat = []
         syllabus_hits = 0
-        for ct in contents:
-            title = ct.get("title") or ""
-            _scan(f"{title} {ct.get('description', '')}", f"content: {title}")
-            # The syllabus is often a document whose BODY (not list desc) holds the emails — fetch a few.
-            if syllabus_hits < 5 and any(
-                k in title.lower() for k in ("syllabus", "강의계획", "course info", "개요", "orientation", "info")
-            ):
+        for n in flat:
+            title = n.get("title") or ""
+            _scan(title, f"content: {title}")
+            if syllabus_hits < 4 and any(k in title.lower() for k in _SYLLABUS_KW):
                 syllabus_hits += 1
-                try:
-                    detail = await self.get_assignment(course_id, ct["id"])
-                    _scan(_html_to_text(detail.get("body")), f"syllabus: {title}")
-                except (httpx.HTTPStatusError, Forbidden):
-                    pass
+                await self._scrape_content_emails(course_id, n, _scan)
 
         return {
             "courseId": course_id,
             "staff": staff,
             "emails_found": [{"email": k, "source": v} for k, v in emails.items()],
-            "note": "Blackboard does not expose staff emails to students via API, so `staff` has "
-                    "names/roles/login-id only. `emails_found` are addresses scraped from the "
-                    "syllabus/announcements/content text. For a syllabus PDF, use download_material.",
+            "note": "Blackboard hides staff emails from students via API, so `staff` has "
+                    "names/roles/login-id only. `emails_found` are scraped from announcements + the "
+                    "syllabus (including syllabus PDF text). Use download_material for the full file.",
         }
+
+    async def _attachment_bytes(self, course_id: str, content_id: str, attachment_id: str,
+                                max_bytes: int = 15_000_000) -> bytes | None:
+        """Stream an attachment into memory (capped) — for parsing (e.g. a syllabus PDF) without
+        writing to disk. Returns None on 401/403."""
+        url = (f"{_v1(self.base)}/courses/{course_id}/contents/{content_id}"
+               f"/attachments/{attachment_id}/download")
+        client = await self._ensure()
+        buf = bytearray()
+        async with client.stream("GET", url) as r:
+            if r.status_code in (401, 403):
+                return None
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes():
+                buf.extend(chunk)
+                if len(buf) > max_bytes:
+                    break
+        return bytes(buf)
+
+    async def _scrape_content_emails(self, course_id: str, node: dict, scan) -> None:
+        """Scan one content node for emails: PDF-attachment text for file items, else the HTML body."""
+        nid, title = node.get("id"), (node.get("title") or "")
+        handler = node.get("type") or ""
+        if "file" in handler or title.lower().endswith(".pdf"):
+            try:
+                atts = await self.list_attachments(course_id, nid)
+            except (httpx.HTTPStatusError, Forbidden):
+                return
+            for a in atts:
+                fn = (a.get("fileName") or "").lower()
+                if fn.endswith(".pdf") or "pdf" in (a.get("mimeType") or "").lower():
+                    scan(_pdf_text(await self._attachment_bytes(course_id, nid, a["id"])),
+                         f"syllabus PDF: {a.get('fileName')}")
+                    return
+        else:
+            try:
+                scan((await self.get_content_body(course_id, nid)).get("body"), f"syllabus: {title}")
+            except (httpx.HTTPStatusError, Forbidden):
+                pass
 
     async def search(self, query: str, term: str | None = "current", limit: int = 20) -> list[dict]:
         """Keyword search across this term's announcements (title+body) and upcoming deadlines.
@@ -682,6 +779,14 @@ class BlackboardClient:
             cats_raw = []
         cat_name = {c["id"]: c.get("title") for c in cats_raw}
 
+        # ONE bulk call for this user's grades across all columns (replaces the per-column N+1).
+        # Rows exist only for columns with activity, so a missing column => no score => pending.
+        try:
+            bulk = await self._json(f"{self.base}/v2/courses/{course_id}/gradebook/users/{uid}")
+            by_col = {g.get("columnId"): g for g in bulk.get("results", [])}
+        except (httpx.HTTPStatusError, Forbidden):
+            by_col = {}
+
         rows: list[dict] = []
         weights_bb: dict | None = None
         for col in cols:
@@ -691,12 +796,7 @@ class BlackboardClient:
                 w = _parse_formula_weights((col.get("formula") or {}).get("formula"), cat_name)
                 if w:
                     weights_bb = w
-            try:
-                grade = await self._json(
-                    f"{self.base}/v2/courses/{course_id}/gradebook/columns/{col['id']}/users/{uid}"
-                )
-            except (httpx.HTTPStatusError, Forbidden):
-                grade = {}
+            grade = by_col.get(col.get("id"), {})
             dg = grade.get("displayGrade")
             rows.append({
                 "column": name,
@@ -710,6 +810,50 @@ class BlackboardClient:
             })
         return rows, weights_bb
 
+    async def _course_grade_slice(self, co: dict, weights: dict | None = None) -> dict:
+        """One course's grade summary (categories + weighted + raw). Reused by grade_summary,
+        course_overview and exam_prep_pack."""
+        try:
+            rows, weights_bb = await self._course_grades_detailed(co["courseId"])
+        except (httpx.HTTPStatusError, Forbidden):
+            return {"course": co["name"], "courseId": co["courseId"], "error": "could not load grades"}
+        graded = [r for r in rows if not r["is_total"] and isinstance(r.get("score"), (int, float))]
+        agg: dict = defaultdict(lambda: {"earned": 0.0, "possible": 0.0, "items": 0})
+        for r in graded:
+            a = agg[r["category"] or "Uncategorized"]
+            a["earned"] += r["score"]
+            a["items"] += 1
+            if isinstance(r["possible"], (int, float)):
+                a["possible"] += r["possible"]
+        categories = [
+            {"category": k, "earned": round(v["earned"], 2), "possible": round(v["possible"], 2),
+             "percent": round(v["earned"] / v["possible"] * 100, 1) if v["possible"] else None,
+             "items": v["items"]}
+            for k, v in sorted(agg.items())
+        ]
+        earned = sum(r["score"] for r in graded)
+        possible = sum(r["possible"] for r in graded if isinstance(r["possible"], (int, float)))
+        bb_total = next((r for r in rows if r["is_total"] and isinstance(r.get("score"), (int, float))), None)
+        user_w = _weights_for(co, weights)
+        weighted = _apply_weights(categories, weights_bb or user_w)
+        return {
+            "course": co["name"], "courseId": co["courseId"],
+            "graded_count": len(graded),
+            "pending_count": sum(1 for r in rows if not r["is_total"] and r.get("score") is None),
+            "categories": categories,
+            "blackboard_total": (
+                {"name": bb_total["column"], "score": bb_total["score"], "possible": bb_total["possible"],
+                 "text": bb_total["text"],
+                 "percent": round(bb_total["score"] / bb_total["possible"] * 100, 1)
+                            if bb_total.get("possible") else None}
+                if bb_total else None
+            ),
+            "weights_source": "blackboard" if weights_bb else ("user" if (user_w and weighted) else None),
+            "weighted": weighted,
+            "raw_percent": round(earned / possible * 100, 1) if possible else None,
+            "raw_earned": round(earned, 2), "raw_possible": round(possible, 2),
+        }
+
     async def grade_summary(self, term: str | None = "current", weights: dict | None = None) -> dict:
         """Per-course grades with category breakdown and WEIGHTED standing.
 
@@ -718,51 +862,7 @@ class BlackboardClient:
         formula if the course defines them, else from the `weights` arg you pass.
         """
         courses = await self.list_courses(term=term)
-
-        async def _one(co: dict) -> dict:
-            try:
-                rows, weights_bb = await self._course_grades_detailed(co["courseId"])
-            except (httpx.HTTPStatusError, Forbidden):
-                return {"course": co["name"], "courseId": co["courseId"], "error": "could not load grades"}
-
-            graded = [r for r in rows if not r["is_total"] and isinstance(r.get("score"), (int, float))]
-            agg: dict = defaultdict(lambda: {"earned": 0.0, "possible": 0.0, "items": 0})
-            for r in graded:
-                a = agg[r["category"] or "Uncategorized"]
-                a["earned"] += r["score"]
-                a["items"] += 1
-                if isinstance(r["possible"], (int, float)):
-                    a["possible"] += r["possible"]
-            categories = [
-                {"category": k, "earned": round(v["earned"], 2), "possible": round(v["possible"], 2),
-                 "percent": round(v["earned"] / v["possible"] * 100, 1) if v["possible"] else None,
-                 "items": v["items"]}
-                for k, v in sorted(agg.items())
-            ]
-            earned = sum(r["score"] for r in graded)
-            possible = sum(r["possible"] for r in graded if isinstance(r["possible"], (int, float)))
-            bb_total = next((r for r in rows if r["is_total"] and isinstance(r.get("score"), (int, float))), None)
-            user_w = _weights_for(co, weights)
-            weighted = _apply_weights(categories, weights_bb or user_w)
-            return {
-                "course": co["name"], "courseId": co["courseId"],
-                "graded_count": len(graded),
-                "pending_count": sum(1 for r in rows if not r["is_total"] and r.get("score") is None),
-                "categories": categories,
-                "blackboard_total": (
-                    {"name": bb_total["column"], "score": bb_total["score"], "possible": bb_total["possible"],
-                     "text": bb_total["text"],
-                     "percent": round(bb_total["score"] / bb_total["possible"] * 100, 1)
-                                if bb_total.get("possible") else None}
-                    if bb_total else None
-                ),
-                "weights_source": "blackboard" if weights_bb else ("user" if (user_w and weighted) else None),
-                "weighted": weighted,
-                "raw_percent": round(earned / possible * 100, 1) if possible else None,
-                "raw_earned": round(earned, 2), "raw_possible": round(possible, 2),
-            }
-
-        summaries = await asyncio.gather(*[_one(c) for c in courses])
+        summaries = await asyncio.gather(*[self._course_grade_slice(c, weights) for c in courses])
         return {
             "term": term,
             "courses": list(summaries),
@@ -770,6 +870,118 @@ class BlackboardClient:
                     "(unweighted). Many UNIST courses don't store weights in Blackboard — pass "
                     "weights={'Exam':40,'Quiz':30,'Homework':30} (or {course: {category: weight}}) "
                     "to apply your syllabus weights.",
+        }
+
+    # ---------- content tree / body ----------
+    async def course_outline(self, course_id: str, max_nodes: int = 400) -> dict:
+        """Full content tree (folders + items) for a course in ONE call, nested by parentId."""
+        try:
+            items = await self._paged(
+                f"{_v1(self.base)}/courses/{course_id}/contents",
+                params={"recursive": "true",
+                        "fields": "id,parentId,title,contentHandler,hasChildren,availability,position"},
+            )
+        except (httpx.HTTPStatusError, Forbidden):
+            items = await self.get_course_contents(course_id)
+        truncated = len(items) > max_nodes
+        items = items[:max_nodes]
+        nodes = {
+            it["id"]: {"id": it["id"], "title": it.get("title"),
+                       "type": (it.get("contentHandler") or {}).get("id"),
+                       "available": (it.get("availability") or {}).get("available"),
+                       "hasChildren": it.get("hasChildren"), "children": []}
+            for it in items if it.get("id")
+        }
+        roots = []
+        for it in items:
+            node = nodes.get(it.get("id"))
+            if node is None:
+                continue
+            parent = nodes.get(it.get("parentId"))
+            (parent["children"] if parent else roots).append(node)
+        return {"courseId": course_id, "node_count": len(items), "truncated": truncated, "outline": roots}
+
+    async def get_content_body(self, course_id: str, content_id: str) -> dict:
+        """Text body of one content item (+ contentHandler). For file-only items, says to fetch attachments."""
+        data = await self._json(
+            f"{_v1(self.base)}/courses/{course_id}/contents/{content_id}",
+            params={"fields": "id,title,description,body,contentHandler"},
+        )
+        handler = (data.get("contentHandler") or {}).get("id")
+        body = _html_to_text(data.get("body"))
+        out = {
+            "title": data.get("title"),
+            "description": _html_to_text(data.get("description")),
+            "body": body,
+            "content_handler": handler,
+            "has_body": bool(body),
+        }
+        if not body and handler and ("file" in handler or "document" in handler):
+            out["hint"] = "No inline body — use list_attachments + download_material to get the file."
+        return out
+
+    # ---------- per-course composites ----------
+    async def course_overview(self, course: str) -> dict:
+        """Single-course dashboard: top-level contents + recent announcements + this course's
+        deadlines + your grade slice. `course` = name / code / id."""
+        courses = await self.list_courses(include_closed=True)
+        co = _resolve_course(courses, course)
+        if not co:
+            return {"error": f"course not found: {course!r}",
+                    "some_courses": [c["name"] for c in courses[:12]]}
+        cid = co["courseId"]
+        results = await asyncio.gather(
+            self.get_course_contents(cid),
+            self.list_announcements(course_id=cid, limit=10),
+            self.upcoming_deadlines(),
+            self._course_grade_slice(co),
+            return_exceptions=True,
+        )
+        contents, anns, deadlines, grades = (r if not isinstance(r, Exception) else None for r in results)
+        dl = [d for d in (deadlines or [])
+              if d.get("calendarId") == cid or (co["name"] or "").lower() in (d.get("course") or "").lower()]
+        tree = [{"id": ct["id"], "title": ct.get("title"), "hasChildren": ct.get("hasChildren"),
+                 "type": (ct.get("contentHandler") or {}).get("id")} for ct in (contents or [])]
+        return {
+            "course": co["name"], "courseId": cid, "term": co.get("term"),
+            "partial": any(isinstance(r, Exception) for r in results),
+            "contents_top_level": tree,
+            "recent_announcements": anns or [],
+            "deadlines": dl,
+            "grades": grades,
+        }
+
+    async def exam_prep_pack(self, course: str, query: str | None = None) -> dict:
+        """Everything for an upcoming exam: exam-related announcements (date/room/scope as raw
+        snippets), the course's deadlines, materials tree, and your grade weak-spots."""
+        courses = await self.list_courses(include_closed=True)
+        co = _resolve_course(courses, course)
+        if not co:
+            return {"error": f"course not found: {course!r}",
+                    "some_courses": [c["name"] for c in courses[:12]]}
+        cid = co["courseId"]
+        results = await asyncio.gather(
+            self.list_announcements(course_id=cid, limit=0),
+            self.upcoming_deadlines(),
+            self.course_outline(cid),
+            self._course_grade_slice(co),
+            return_exceptions=True,
+        )
+        anns, deadlines, outline, grades = (r if not isinstance(r, Exception) else None for r in results)
+        kws = ["시험", "exam", "midterm", "final", "quiz", "test", "기말", "중간"]
+        if query:
+            kws.append(query.lower())
+        exam_anns = [a for a in (anns or [])
+                     if any(k in f"{a.get('title', '')} {a.get('body', '')}".lower() for k in kws)]
+        dl = [d for d in (deadlines or [])
+              if d.get("calendarId") == cid or (co["name"] or "").lower() in (d.get("course") or "").lower()]
+        return {
+            "course": co["name"], "courseId": cid,
+            "partial": any(isinstance(r, Exception) for r in results),
+            "exam_announcements": exam_anns,
+            "deadlines": dl,
+            "materials_outline": outline.get("outline") if isinstance(outline, dict) else None,
+            "grade_status": grades,
         }
 
     # ---------- keep-alive ----------

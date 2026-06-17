@@ -91,19 +91,23 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 - `weekly_briefing(days=7)` — 현재 과목 + 다가오는 마감 + 최근 공지(시험일정·평균 포함)를 한 번에
 - `grade_summary(term, weights)` — 전 과목 성적 (카테고리별 분해 + **가중 총점**). Blackboard에 가중 총점이 있으면 그걸 쓰고, 없으면 `weights={"Exam":40,"Quiz":30,...}`로 시험·과제 비율 적용
 - `search(query)` — 공지·마감 키워드 검색 (예: "디지털논리 시험", "midterm")
+- `course_overview(course)` — 한 과목 대시보드 (자료+공지+마감+성적). 과목명/코드/id로 지정
+- `exam_prep_pack(course)` — 시험 대비 한방 (시험 공지+마감+자료 트리+취약 카테고리)
 
 **읽기 (readOnlyHint=true)**
 - `bb_auth_status` — 세션 상태
 - `bb_login` — 브라우저 로그인(서브프로세스). 타임아웃 시 터미널에서 `login` 권장
 - `bb_refresh` — 저장된 SSO 쿠키로 **조용한 재인증**(Azure 세션 살아있으면 MFA 없이)
 - `list_courses(term=, include_closed=)` — 수강 과목. `term="current"`로 이번 학기만
-- `get_course_contents` / `get_content_children` — 콘텐츠 트리
+- `get_course_contents` / `get_content_children` — 콘텐츠(한 단계)
+- `course_outline(course_id)` — 전체 콘텐츠 트리 한 번에 (중첩)
+- `get_content_body(course_id, content_id)` — 콘텐츠 본문 텍스트(+핸들러)
 - `list_attachments`, `download_material` — 자료 목록/다운로드
 - `get_grades` — 성적
 - `list_announcements` — 공지 (현재 학기 전 과목 통합, 본문 HTML→텍스트; 시험일정·평균·통계 포함). `since`/`limit`/`course_id` 옵션
 - `upcoming_deadlines` — 마감/일정(전 과목)
 - `get_assignment` — 과제 상세
-- `course_staff(course_id)` — 교수·TA 명단(이름·역할·로그인ID) + 실래버스·공지에서 추출한 이메일
+- `course_staff(course_id)` — 교수·TA 명단(이름·역할·로그인ID) + **실래버스 PDF**·공지에서 추출한 이메일
 
 **쓰기 (destructiveHint=true, `confirm=True` 필수)**
 - `create_calendar_item` — 개인 캘린더 알림 생성

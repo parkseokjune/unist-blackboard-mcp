@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.5 — 2026-06-17 — content tree, composites, PDF syllabus emails
+
+Driven by a 4-lens extension-plan review (39 ideas → 23 scored). New tools (22 total):
+- **`course_outline(course_id)`** — the whole folder/content tree in ONE call (`?recursive=true`), nested.
+- **`get_content_body(course_id, content_id)`** — readable text of a content item (+ contentHandler;
+  for file-only items it points you to attachments).
+- **`course_overview(course)`** — single-course dashboard: contents + announcements + that course's
+  deadlines + your grade slice (resolves course by name/code/id).
+- **`exam_prep_pack(course)`** — exam-related announcements + deadlines + materials tree + grade weak-spots.
+
+Improvements:
+- **`course_staff` now reads the syllabus PDF** (walks the full content tree, extracts text via `pypdf`)
+  — live it pulled the professor's email straight from `syllabus.pdf`, plus the TA emails from announcements.
+- **`list_announcements`** items now include an `attachments` list (image/file URLs embedded in the body,
+  e.g. posted exam solutions).
+- **`grade_summary` efficiency**: one bulk `GET .../gradebook/users/{uid}` per course instead of one call
+  per column (≈6× fewer requests), same results.
+
 ## 0.1.4 — 2026-06-17 — course staff & emails
 
 - **`course_staff(course_id)`** — lists a course's instructors/TAs (name, role, login id) from the

@@ -146,6 +146,38 @@ async def weekly_briefing(days: int = 7) -> dict:
     return await _client.weekly_briefing(days)
 
 
+@mcp.tool(annotations=_ann(read_only=True, title="Course overview"))
+@_guard
+async def course_overview(course: str) -> dict:
+    """Single-course dashboard: top-level contents + recent announcements + that course's deadlines
+    + your grade slice. `course` can be a name, code, or courseId."""
+    return await _client.course_overview(course)
+
+
+@mcp.tool(annotations=_ann(read_only=True, title="Exam prep pack"))
+@_guard
+async def exam_prep_pack(course: str, query: str | None = None) -> dict:
+    """Everything for an upcoming exam in one shot: exam-related announcements (date/room/scope),
+    the course's deadlines, its materials tree, and where you're losing points. `course`=name/code/id."""
+    return await _client.exam_prep_pack(course, query)
+
+
+@mcp.tool(annotations=_ann(read_only=True, title="Course outline (content tree)"))
+@_guard
+async def course_outline(course_id: str) -> dict:
+    """The full folder/content tree of a course in one call (nested), so you can see all materials
+    at a glance and then download_material the ones you want."""
+    return await _client.course_outline(course_id)
+
+
+@mcp.tool(annotations=_ann(read_only=True, title="Content body"))
+@_guard
+async def get_content_body(course_id: str, content_id: str) -> dict:
+    """The readable text body of a content item (lecture page, document). If it's a file-only item,
+    the result tells you to use list_attachments + download_material instead."""
+    return await _client.get_content_body(course_id, content_id)
+
+
 @mcp.tool(annotations=_ann(read_only=True, title="Course staff & emails"))
 @_guard
 async def course_staff(course_id: str) -> dict:

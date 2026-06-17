@@ -55,16 +55,17 @@ async def test_course_staff_lists_staff_and_scrapes_emails():
     async def anns(course_id=None, limit=0):
         return [{"title": "Welcome", "body": "email the TA at ta1@unist.ac.kr"}]
 
-    async def contents(course_id):
-        return [{"id": "_1_1", "title": "Course Syllabus", "description": "prof: baek@unist.ac.kr"}]
+    async def outline(course_id):
+        return {"outline": [{"id": "_1_1", "title": "Course Syllabus",
+                             "type": "resource/x-bb-document", "children": []}]}
 
-    async def assignment(course_id, content_id):
-        return {"body": "<p>extra TA: ta2@unist.ac.kr</p>"}
+    async def content_body(course_id, content_id):
+        return {"body": "prof: baek@unist.ac.kr ; extra TA: ta2@unist.ac.kr"}
 
     c._paged = paged
     c.list_announcements = anns
-    c.get_course_contents = contents
-    c.get_assignment = assignment
+    c.course_outline = outline
+    c.get_content_body = content_body
 
     out = await c.course_staff("_c_")
     assert {s["role"] for s in out["staff"]} == {"Instructor", "TeachingAssistant"}  # students excluded
