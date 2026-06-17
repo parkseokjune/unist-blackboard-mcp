@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import sys
 
 from mcp.server.fastmcp import FastMCP
@@ -59,13 +60,54 @@ def _ann(read_only: bool = False, destructive: bool = False, title: str | None =
     )
 
 
+def _cap_output(result):
+    """Soft-cap a tool's JSON size so a huge result can't blow the client token budget.
+
+    Shape-aware: trims trailing list items, and for dicts shrinks the largest list field(s) and
+    caps oversized strings, attaching a _truncated marker. No-op (one json.dumps) under budget.
+    """
+    budget = config.MAX_OUTPUT_CHARS
+
+    def size(o) -> int:
+        return len(json.dumps(o, ensure_ascii=False, default=str))
+
+    try:
+        if size(result) <= budget:
+            return result
+    except Exception:  # noqa: BLE001 - unserializable; let it through unchanged
+        return result
+
+    if isinstance(result, list):
+        out = list(result)
+        while out and size(out) > budget - 200:
+            out.pop()
+        return {"_truncated": True, "returned": len(out), "total": len(result),
+                "hint": "Result too large — narrow with term=/course_id=/limit=.", "items": out}
+    if isinstance(result, dict):
+        out = dict(result)
+        for k in sorted(out, key=lambda k: size(out[k]), reverse=True):
+            if size(out) <= budget:
+                break
+            v = out[k]
+            if isinstance(v, list):
+                while v and size(out) > budget:
+                    v.pop()
+            elif isinstance(v, str) and len(v) > 500:
+                out[k] = v[:500] + "…[truncated]"
+        out["_truncated"] = True
+        return out
+    if isinstance(result, str) and len(result) > budget:
+        return result[:budget] + "…[truncated]"
+    return result
+
+
 def _guard(fn):
     """Turn auth exceptions into structured, user-actionable results instead of crashes."""
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         _ensure_keepalive()
         try:
-            return await fn(*args, **kwargs)
+            return _cap_output(await fn(*args, **kwargs))
         except NotAuthenticated as e:
             return {"error": "not_authenticated", "message": str(e),
                     "fix": "Run the bb_login tool, or `unist-blackboard-mcp login` in a terminal."}
@@ -88,6 +130,27 @@ def _guard(fn):
 async def bb_auth_status() -> dict:
     """Report whether a Blackboard session is stored and how old it is."""
     return _auth.status()
+
+
+@mcp.tool(annotations=_ann(read_only=True, title="My profile"))
+@_guard
+async def bb_whoami() -> dict:
+    """The signed-in user's identity: name, login id, student id, and email (if Blackboard exposes it)."""
+    return await _client.profile()
+
+
+@mcp.tool(annotations=_ann(read_only=True, title="Server / version info"))
+async def bb_server_info() -> dict:
+    """Versions for bug reports: this MCP's version + the live Blackboard Learn build. Works logged-out."""
+    from . import __version__
+    info = {"mcp_version": __version__, "host": config.HOST}
+    try:
+        client = await _client._ensure()
+        r = await client.get(f"{config.PUBLIC_API}/v1/system/version")
+        info["blackboard_build"] = r.json().get("learn") if r.status_code == 200 else f"HTTP {r.status_code}"
+    except Exception as e:  # noqa: BLE001 - logged-out / offline still returns mcp_version
+        info["blackboard_build"] = f"unavailable ({type(e).__name__})"
+    return info
 
 
 @mcp.tool(annotations=_ann(destructive=False, title="Log in (opens browser)"))
@@ -353,6 +416,27 @@ def exam_prep_prompt(course: str = "") -> str:
     return (
         f"{target}의 시험을 대비하려고 해. list_announcements로 공지를 확인해 시험 일정과 출제범위를 찾고,"
         " get_grades로 현재 점수를 확인한 뒤, 남은 기간 대비 우선순위를 정해줘. 한국어로."
+    )
+
+
+@mcp.prompt(title="Weekly briefing (EN)")
+def weekly_briefing_en_prompt() -> str:
+    return (
+        "Call weekly_briefing, then summarize in English:\n"
+        "1) Upcoming deadlines (course / title / date, soonest first)\n"
+        "2) Upcoming exams — extract date, room and scope from recent_announcements bodies\n"
+        "3) New announcements — include class average/stats (Average/Median) from grading posts\n"
+        "End with the 3 most urgent things this week in bold."
+    )
+
+
+@mcp.prompt(title="Exam prep (EN)")
+def exam_prep_en_prompt(course: str = "") -> str:
+    target = f" for '{course}'" if course else " for my current courses"
+    return (
+        f"Help me prepare{target}. Call exam_prep_pack (or list_announcements + grade_summary): find the "
+        "exam date/scope from announcements, check my current grades, and prioritize what to study given "
+        "the time left. Answer in English."
     )
 
 

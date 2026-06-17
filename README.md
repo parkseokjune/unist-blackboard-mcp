@@ -98,6 +98,8 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 - `bb_auth_status` — 세션 상태
 - `bb_login` — 브라우저 로그인(서브프로세스). 타임아웃 시 터미널에서 `login` 권장
 - `bb_refresh` — 저장된 SSO 쿠키로 **조용한 재인증**(Azure 세션 살아있으면 MFA 없이)
+- `bb_whoami` — 내 신원(이름·로그인ID·학번·이메일)
+- `bb_server_info` — MCP 버전 + 라이브 Blackboard 빌드 (버그 리포트용)
 - `list_courses(term=, include_closed=)` — 수강 과목. `term="current"`로 이번 학기만
 - `get_course_contents` / `get_content_children` — 콘텐츠(한 단계)
 - `course_outline(course_id)` — 전체 콘텐츠 트리 한 번에 (중첩)
@@ -135,6 +137,10 @@ claude mcp add --scope local --transport stdio unist-blackboard \
 | `BB_KEEPALIVE_SECONDS` | `600` | keep-alive 핑 간격 |
 | `BB_COURSES_TTL` | `300` | 과목 목록 캐시 TTL |
 | `BB_REFRESH_TIMEOUT_MS` | `45000` | silent refresh 대기 한도 |
+| `BB_MAX_CONCURRENCY` | `6` | 동시 HTTP 요청 상한(정중함) |
+| `BB_MAX_OUTPUT_CHARS` | `40000` | 도구 출력 크기 소프트 캡 |
+
+문제가 생기면 **`uvx unist-blackboard-mcp doctor`** 로 자가 진단(의존성·브라우저·세션·등록·라이브 핑), `version` 으로 버전 번들을 확인하세요.
 
 ## 주의
 

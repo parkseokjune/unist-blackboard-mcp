@@ -259,6 +259,8 @@ class BlackboardClient:
         self._memb_cache_at = 0.0
         # background drain tasks for clients orphaned by a refresh (kept referenced so not GC'd).
         self._drains: set = set()
+        # leaf-level concurrency cap (politeness); lazy-created on the running loop in _ensure.
+        self._sem: asyncio.Semaphore | None = None
 
     def _now(self) -> float:
         # loop-independent monotonic clock (no deprecated get_event_loop, no bogus 0.0 off-loop).
@@ -269,6 +271,8 @@ class BlackboardClient:
         return config.PRIVATE_API if self._api == "private" else config.PUBLIC_API
 
     async def _ensure(self) -> httpx.AsyncClient:
+        if self._sem is None:  # create on the running loop, shared across rebuilds
+            self._sem = asyncio.Semaphore(config.MAX_CONCURRENCY)
         if self._client is None:
             cookies = self.auth.cookies()
             if not cookies:
@@ -340,7 +344,8 @@ class BlackboardClient:
 
     async def _get(self, url: str, _retried: bool = False, **kw) -> httpx.Response:
         client = await self._ensure()
-        r = await client.get(url, **kw)
+        async with self._sem:  # leaf-only: released before any refresh/retry to avoid deadlock
+            r = await client.get(url, **kw)
         if r.status_code == 401:
             if not _retried and await self._try_refresh():
                 return await self._get(url, _retried=True, **kw)
@@ -356,7 +361,8 @@ class BlackboardClient:
     async def _write(self, method: str, url: str, _retried: bool = False, **kw) -> httpx.Response:
         """POST/PATCH/etc. with the same 401 silent-refresh + 403->Forbidden handling as _get."""
         client = await self._ensure()
-        r = await client.request(method, url, **kw)
+        async with self._sem:
+            r = await client.request(method, url, **kw)
         if r.status_code == 401:
             if not _retried and await self._try_refresh():
                 return await self._write(method, url, _retried=True, **kw)
@@ -383,7 +389,8 @@ class BlackboardClient:
     async def whoami(self, _retried: bool = False) -> dict:
         client = await self._ensure()
         for url in (f"{config.PUBLIC_API}/v1/users/me", f"{config.PRIVATE_API}/v1/users/me"):
-            r = await client.get(url)
+            async with self._sem:
+                r = await client.get(url)
             if r.status_code == 200:
                 data = r.json()
                 self._uid = data.get("id") or data.get("userId") or data.get("uuid")
@@ -703,7 +710,7 @@ class BlackboardClient:
                f"/attachments/{attachment_id}/download")
         client = await self._ensure()
         buf = bytearray()
-        async with client.stream("GET", url) as r:
+        async with self._sem, client.stream("GET", url) as r:
             if r.status_code in (401, 403):
                 return None
             r.raise_for_status()
@@ -982,6 +989,18 @@ class BlackboardClient:
             "deadlines": dl,
             "materials_outline": outline.get("outline") if isinstance(outline, dict) else None,
             "grade_status": grades,
+        }
+
+    async def profile(self) -> dict:
+        """The signed-in user's identity — explicit allowlist (no extra PII into the transcript)."""
+        data = await self.whoami()
+        nm = data.get("name") or {}
+        return {
+            "name": f"{nm.get('given', '')} {nm.get('family', '')}".strip() or data.get("userName"),
+            "userName": data.get("userName"),
+            "studentId": data.get("studentId"),
+            "email": (data.get("contact") or {}).get("email"),
+            "institutionRoles": data.get("institutionRoleIds"),
         }
 
     # ---------- keep-alive ----------

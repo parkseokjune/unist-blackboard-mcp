@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.6 — 2026-06-17 — robustness & ops
+
+- **`doctor`** CLI — self-check for students: Python, deps, Chromium, keychain, host, session,
+  live ping, and whether the server is registered in Claude Desktop/Code. Non-zero exit on failure.
+- **`version`** command + **`--version`** flag + **`bb_server_info`** tool (this MCP's version + the
+  live Blackboard Learn build, for bug reports). `__version__` is now single-sourced from package
+  metadata (no more drift between `__init__.py` and `pyproject.toml`).
+- **`bb_whoami`** — the signed-in user's identity (allowlisted fields only).
+- **Output-size guard**: every tool result is soft-capped (`BB_MAX_OUTPUT_CHARS`, default 40k) with a
+  shape-aware truncation envelope so a huge result can't blow the client's token budget.
+- **Concurrency cap**: leaf HTTP calls go through a semaphore (`BB_MAX_CONCURRENCY`, default 6) to be
+  polite to the LMS and avoid tripping rate limits during fan-out (grade_summary/weekly_briefing).
+- Two English prompts (Weekly briefing / Exam prep) alongside the Korean ones. 32 tests.
+
 ## 0.1.5 — 2026-06-17 — content tree, composites, PDF syllabus emails
 
 Driven by a 4-lens extension-plan review (39 ideas → 23 scored). New tools (22 total):

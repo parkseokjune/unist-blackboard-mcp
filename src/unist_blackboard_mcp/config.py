@@ -59,4 +59,8 @@ REFRESH_TIMEOUT_MS = int(os.environ.get("BB_REFRESH_TIMEOUT_MS", str(45 * 1000))
 KEEPALIVE_INTERVAL = int(os.environ.get("BB_KEEPALIVE_SECONDS", "600"))
 # In-memory cache TTL (seconds) for the course-membership list (changes rarely).
 COURSES_TTL = int(os.environ.get("BB_COURSES_TTL", "300"))
+# Max concurrent in-flight HTTP requests (politeness to the LMS / avoid WAF rate-limits).
+MAX_CONCURRENCY = int(os.environ.get("BB_MAX_CONCURRENCY", "6"))
+# Soft cap on a tool's JSON output size (chars) so a huge result can't blow the client token budget.
+MAX_OUTPUT_CHARS = int(os.environ.get("BB_MAX_OUTPUT_CHARS", "40000"))
 USER_AGENT = os.environ.get("BB_USER_AGENT", "unist-blackboard-mcp/0.1 (+personal)")

@@ -1,4 +1,6 @@
 """HTTP-layer behavior with respx-mocked transport: 403 mapping, 401 auto-heal, aggregation."""
+import asyncio
+
 import httpx
 import pytest
 import respx
@@ -79,6 +81,25 @@ async def test_whoami_auto_heals_on_expiry():
     me = await c.whoami()
     assert me["id"] == "_1_1"
     assert auth.refresh_calls == 1  # refreshed exactly once, then retried
+    await c.aclose()
+
+
+@respx.mock
+async def test_semaphore_caps_in_flight(monkeypatch):
+    monkeypatch.setattr(config, "MAX_CONCURRENCY", 3)
+    state = {"inflight": 0, "peak": 0}
+
+    async def handler(request):
+        state["inflight"] += 1
+        state["peak"] = max(state["peak"], state["inflight"])
+        await asyncio.sleep(0.02)
+        state["inflight"] -= 1
+        return httpx.Response(200, json={"ok": True})
+
+    respx.get(VERSION_URL).mock(side_effect=handler)
+    c = BlackboardClient(auth=FakeAuth())
+    await asyncio.gather(*[c._get(VERSION_URL) for _ in range(12)])
+    assert state["peak"] <= 3
     await c.aclose()
 
 

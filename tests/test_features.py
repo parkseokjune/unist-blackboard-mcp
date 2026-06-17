@@ -1,5 +1,29 @@
 """search / grade_summary logic, with underlying calls stubbed (no network)."""
+import json
+
+from unist_blackboard_mcp import config
 from unist_blackboard_mcp.client import BlackboardClient, _snippet
+from unist_blackboard_mcp.server import _cap_output
+
+
+def test_cap_output_under_budget_is_noop():
+    obj = {"a": [1, 2, 3]}
+    assert _cap_output(obj) is obj
+
+
+def test_cap_output_trims_large_list(monkeypatch):
+    monkeypatch.setattr(config, "MAX_OUTPUT_CHARS", 300)
+    big = [{"i": i, "x": "y" * 20} for i in range(100)]
+    out = _cap_output(big)
+    assert out["_truncated"] is True and out["total"] == 100 and out["returned"] < 100
+    assert len(json.dumps(out, ensure_ascii=False)) <= 300
+
+
+def test_cap_output_shrinks_dict_and_caps_strings(monkeypatch):
+    monkeypatch.setattr(config, "MAX_OUTPUT_CHARS", 300)
+    out = _cap_output({"small": 1, "big_list": ["item" * 10 for _ in range(50)], "blurb": "z" * 5000})
+    assert out["_truncated"] is True
+    assert json.loads(json.dumps(out, ensure_ascii=False))  # still valid JSON
 
 
 def test_snippet_centers_on_match():
